@@ -64,3 +64,7 @@ obj-$(CONFIG_QPNP_CHARGER)	+= qpnp-charger.o
 obj-$(CONFIG_LTC4088_CHARGER)	+= ltc4088-charger.o
 obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
 obj-$(CONFIG_BATTERY_BCL)	+= battery_current_limit.o
+
+#for pantech msm8974 device
+obj-$(CONFIG_PANTECH_EF63_PMIC_FUELGAUGE_MAX17058) += pt_max17058_battery.o
+obj-$(CONFIG_PANTECH_PMIC_CHARGER_BQ2419X) 	+= pt_bq2419x_charger.o
