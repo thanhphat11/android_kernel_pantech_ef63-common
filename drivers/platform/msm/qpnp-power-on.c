@@ -23,6 +23,9 @@
 #include <linux/input.h>
 #include <linux/log2.h>
 #include <linux/qpnp/power-on.h>
+#ifdef CONFIG_PANTECH_ERR_CRASH_LOGGING
+#include <mach/pantech_apanic.h>
+#endif
 
 #define PMIC_VER_8941           0x01
 #define PMIC_VERSION_REG        0x0105
@@ -422,6 +425,9 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 					(pon_rt_sts & pon_rt_bit));
 	input_sync(pon->pon_input);
 
+#ifdef CONFIG_PANTECH_ERR_CRASH_LOGGING
+	pantech_force_dump_key(cfg->key_code, 1);
+#endif
 	return 0;
 }
 
