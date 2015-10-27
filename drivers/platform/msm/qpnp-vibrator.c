@@ -35,6 +35,12 @@
 #define QPNP_VIB_VTG_SET_MASK		0x1F
 #define QPNP_VIB_LOGIC_SHIFT		4
 
+#ifdef VIBRATOR_PANTECH_PATCH
+static int debug_vib=0;
+
+#define dbg(fmt, args...)   if(debug_vib)printk("[VIB] " fmt, ##args)
+#endif
+
 struct qpnp_vib {
 	struct spmi_device *spmi;
 	struct hrtimer vib_timer;
@@ -51,6 +57,24 @@ struct qpnp_vib {
 	int timeout;
 	spinlock_t lock;
 };
+
+#ifdef VIBRATOR_PANTECH_PATCH
+void pantech_vib_debug_enable(void);
+void pantech_vib_debug_disable(void);
+void pantech_vib_debug_enable(void)
+{
+	printk("[VIB] Debug_vib enable is called\n");
+	debug_vib=1;
+	return;
+}
+
+void pantech_vib_debug_disable(void)
+{
+	printk("[VIB] Debug_vib disable is called\n");
+	debug_vib=0;
+	return;
+}
+#endif
 
 static struct qpnp_vib *vib_dev;
 
@@ -201,8 +225,14 @@ static int qpnp_vib_set(struct qpnp_vib *vib, int on)
 
 	if (on) {
 		val = vib->reg_vtg_ctl;
+#ifdef VIBRATOR_PANTECH_PATCH
+		dbg("[VIB] ON -> %d, vib->reg_vtg_ctl -> %d, vib->vtg_level -> %d \n",on,val,vib->vtg_level);
+#endif
 		val &= ~QPNP_VIB_VTG_SET_MASK;
 		val |= (vib->vtg_level & QPNP_VIB_VTG_SET_MASK);
+#ifdef VIBRATOR_PANTECH_PATCH
+		val=on;
+#endif
 		rc = qpnp_vib_write_u8(vib, &val, QPNP_VIB_VTG_CTL(vib->base));
 		if (rc < 0)
 			return rc;
@@ -216,6 +246,9 @@ static int qpnp_vib_set(struct qpnp_vib *vib, int on)
 	} else {
 		val = vib->reg_en_ctl;
 		val &= ~QPNP_VIB_EN;
+#ifdef VIBRATOR_PANTECH_PATCH
+		dbg("[VIB] OFF -> %d, vib->reg_vtg_ctl -> %d \n",on,val);
+#endif
 		rc = qpnp_vib_write_u8(vib, &val, QPNP_VIB_EN_CTL(vib->base));
 		if (rc < 0)
 			return rc;
@@ -231,6 +264,12 @@ static void qpnp_vib_enable(struct timed_output_dev *dev, int value)
 					 timed_dev);
 	unsigned long flags;
 
+#ifdef VIBRATOR_PANTECH_PATCH
+	int vib_strength = ((value & 0xFFFF0000) >> 16) ;
+	int vib_timeout = (value & 0x0000FFFF);
+	dbg("[VIB] vib_strength ->%d, vib_timeout -> %d\n",vib_strength,vib_timeout);
+#endif
+
 retry:
 	spin_lock_irqsave(&vib->lock, flags);
 	if (hrtimer_try_to_cancel(&vib->vib_timer) < 0) {
@@ -239,6 +278,21 @@ retry:
 		goto retry;
 	}
 
+#ifdef VIBRATOR_PANTECH_PATCH
+	if (vib_strength == 0)
+		vib->state = 0;
+	else {
+		vib_timeout = (vib_timeout > vib->timeout ?
+				 0x7FFFFFFF : vib_timeout);
+		if (vib_strength > 31)
+			vib_strength = 31;
+		//vib->state = ((vib_strength*70)/100) + 6 + 11;
+		vib->state = vib_strength;
+		hrtimer_start(&vib->vib_timer,
+			      ktime_set(vib_timeout / 1000, (vib_timeout % 1000) * 1000000),
+			      HRTIMER_MODE_REL);
+	}
+#else
 	if (value == 0)
 		vib->state = 0;
 	else {
@@ -249,7 +303,10 @@ retry:
 			      ktime_set(value / 1000, (value % 1000) * 1000000),
 			      HRTIMER_MODE_REL);
 	}
+#endif
+#ifdef VIBRATOR_PANTECH_PATCH
 	qpnp_vib_set(vib, vib->state);
+#endif
 
 	spin_unlock_irqrestore(&vib->lock, flags);
 }
