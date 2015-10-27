@@ -58,6 +58,11 @@ enum {
 	HW_PLATFORM_QRD	= 11,
 	HW_PLATFORM_HRD	= 13,
 	HW_PLATFORM_DTV	= 14,
+#if defined(CONFIG_PANTECH)
+	HW_PLATFORM_P_EF63S_TP20 = 6316, /* Pantech ef63s tp20 b'd */
+	HW_PLATFORM_P_EF63K_TP20 = 6326, /* Pantech ef63k tp20 b'd */
+	HW_PLATFORM_P_EF63L_TP20 = 6336, /* Pantech ef63l tp20 b'd */
+#endif
 	HW_PLATFORM_INVALID
 };
 
@@ -74,6 +79,11 @@ const char *hw_platform[] = {
 	[HW_PLATFORM_QRD] = "QRD",
 	[HW_PLATFORM_HRD] = "HRD",
 	[HW_PLATFORM_DTV] = "DTV",
+#if defined(CONFIG_PANTECH)
+	[HW_PLATFORM_P_EF63S_TP20] = "Pantech_EF63S_TP20",
+	[HW_PLATFORM_P_EF63K_TP20] = "Pantech_EF63K_TP20",
+	[HW_PLATFORM_P_EF63L_TP20] = "Pantech_EF63L_TP20",
+#endif
 };
 
 enum {
