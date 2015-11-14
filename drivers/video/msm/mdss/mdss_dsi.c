@@ -26,6 +26,10 @@
 #include "mdss_panel.h"
 #include "mdss_dsi.h"
 #include "mdss_debug.h"
+#ifdef CONFIG_F_SKYDISP_SILENT_BOOT
+//seunghwa_Ji p13832
+#include <mach/pantech_sys.h>
+#endif
 
 static unsigned char *mdss_dsi_base;
 
@@ -74,12 +78,25 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata, int enable)
 			goto error;
 		}
 
+#if defined(CONFIG_F_SKYDISP_EF63_SS)
+		gpio_set_value((ctrl_pdata->octa_vddi_reg_en_gpio), 1);
+		msleep(10);
+		gpio_set_value((ctrl_pdata->octa_vci_reg_en_gpio), 1);
+		msleep(10);
+#endif
+
 		if (pdata->panel_info.panel_power_on == 0)
 			mdss_dsi_panel_reset(pdata, 1);
 
 	} else {
 
 		mdss_dsi_panel_reset(pdata, 0);
+
+#if defined(CONFIG_F_SKYDISP_EF63_SS)
+		gpio_set_value((ctrl_pdata->octa_vci_reg_en_gpio), 0);
+		msleep(10);
+		gpio_set_value((ctrl_pdata->octa_vddi_reg_en_gpio), 0);
+#endif
 
 		ret = msm_dss_enable_vreg(
 			ctrl_pdata->power_data.vreg_config,
@@ -367,6 +384,12 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 
 	pinfo = &pdata->panel_info;
 
+	ret = mdss_dsi_panel_power_on(pdata, 1);
+	if (ret) {
+		pr_err("%s: Panel power on failed\n", __func__);
+		return ret;
+	}
+
 	ret = msm_dss_enable_vreg(ctrl_pdata->power_data.vreg_config,
 				ctrl_pdata->power_data.num_vreg, 1);
 	if (ret) {
@@ -524,6 +547,9 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 				mdss_dsi_set_tear_on(ctrl_pdata);
 		}
 	}
+#ifdef CONFIG_F_SKYDISP_SILENT_BOOT	//seunghwa_Ji p13832
+	pantech_sys_reset_backlight_flag_set(true);
+#endif
 
 	pr_debug("%s-:\n", __func__);
 
@@ -564,6 +590,10 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata)
 		}
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_PANEL_INIT;
 	}
+#ifdef CONFIG_F_SKYDISP_SILENT_BOOT	//seunghwa_Ji p13832
+	pantech_sys_reset_backlight_flag_set (false);
+	pdata->silent_backlight = false;
+#endif
 	pr_debug("%s-:End\n", __func__);
 	return ret;
 }
@@ -596,7 +626,11 @@ int mdss_dsi_cont_splash_on(struct mdss_panel_data *pdata)
 	mdss_dsi_host_init(mipi, pdata);
 	mdss_dsi_op_mode_config(mipi->mode, pdata);
 
+#ifdef F_SKYDISP_MAGNAIC_OPERATING_BEFORE_TP20
+	if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE || ctrl_pdata->magnaic_on_cmds.link_state == DSI_LP_MODE) {
+#else
 	if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE) {
+#endif
 		ret = mdss_dsi_unblank(pdata);
 		if (ret) {
 			pr_err("%s: unblank failed\n", __func__);
@@ -748,12 +782,25 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		rc = mdss_dsi_on(pdata);
 		mdss_dsi_op_mode_config(pdata->panel_info.mipi.mode,
 							pdata);
-		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE)
+#ifdef CONFIG_F_SKYDISP_MAGNAIC_OPERATING_BEFORE_TP20
+		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE || ctrl_pdata->magnaic_on_cmds.link_state == DSI_LP_MODE) {
+#else
+		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE) {
+#endif
+#ifdef CONFIG_F_SKYDISP_SILENT_BOOT
+			if (pdata->silent_backlight  == true)
+				break;
+#endif
 			rc = mdss_dsi_unblank(pdata);
+		}
 		break;
 	case MDSS_EVENT_PANEL_ON:
 		ctrl_pdata->ctrl_state |= CTRL_STATE_MDP_ACTIVE;
+#ifdef CONFIG_F_SKYDISP_MAGNAIC_OPERATING_BEFORE_TP20
+		if (ctrl_pdata->on_cmds.link_state == DSI_HS_MODE || ctrl_pdata->magnaic_on_cmds.link_state == DSI_HS_MODE)
+#else
 		if (ctrl_pdata->on_cmds.link_state == DSI_HS_MODE)
+#endif
 			rc = mdss_dsi_unblank(pdata);
 		break;
 	case MDSS_EVENT_BLANK:
@@ -768,7 +815,11 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_EVENT_CONT_SPLASH_FINISH:
 		ctrl_pdata->ctrl_state &= ~CTRL_STATE_MDP_ACTIVE;
+#ifdef CONFIG_F_SKYDISP_MAGNAIC_OPERATING_BEFORE_TP20
+		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE || ctrl_pdata->magnaic_on_cmds.link_state == DSI_LP_MODE) {
+#else
 		if (ctrl_pdata->on_cmds.link_state == DSI_LP_MODE) {
+#endif
 			rc = mdss_dsi_cont_splash_on(pdata);
 		} else {
 			pr_debug("%s:event=%d, Dsi On not called: ctrl_state: %d\n",
@@ -1019,6 +1070,21 @@ static int __devinit mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		goto error_pan_node;
 	}
 
+#ifdef CONFIG_F_SKYDISP_SILENT_BOOT
+	if (pantech_sys_rst_is_silent_boot_mode()) {
+		// if value is 1, silent boot
+		if (!pantech_sys_reset_backlight_flag_get()) {
+			// if value is 0, backlight off
+			ctrl_pdata->panel_data.silent_backlight = true;
+		} else {
+			ctrl_pdata->panel_data.silent_backlight = false;
+		}
+	} else {
+		ctrl_pdata->panel_data.silent_backlight = false;
+	}
+	printk(KERN_WARNING"[%s]value of sky_sys_rst_is_backlight_off = %d\n",__func__,ctrl_pdata->panel_data.silent_backlight);
+	pantech_sys_reset_backlight_flag_set (true);
+#endif
 	pr_debug("%s: Dsi Ctrl->%d initialized\n", __func__, index);
 	return 0;
 
@@ -1243,6 +1309,132 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		pinfo->new_fps = pinfo->mipi.frame_rate;
 	}
 
+#if defined(CONFIG_F_SKYDISP_EF63_SS)
+	/* octa vddi enable */
+	ctrl_pdata->octa_vddi_reg_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+						 "qcom,platform-octa-vddi-reg-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->octa_vddi_reg_en_gpio)) {
+		pr_err("%s:%d, 1.8v Ext Regulator gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		rc = gpio_request(ctrl_pdata->octa_vddi_reg_en_gpio, "octa_vddi_reg_en");
+		if (rc) {
+			pr_err("request 1.8v Ext Regulator gpio failed, rc=%d\n",
+				rc);
+			gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+		rc = gpio_direction_output(ctrl_pdata->octa_vddi_reg_en_gpio, 1);
+		if (rc) {
+			pr_err("set_direction for lcd_vddio_ext_reg gpio failed, rc=%d\n",
+			       rc);
+			gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+	}
+
+	/* octa vci  enable */
+	ctrl_pdata->octa_vci_reg_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+						 "qcom,platform-octa-vci-reg-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->octa_vci_reg_en_gpio)) {
+		pr_err("%s:%d, 3.0v Ext Regulator switch gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		rc = gpio_request(ctrl_pdata->octa_vci_reg_en_gpio, "octa_vci_reg_en");
+		if (rc) {
+			pr_err("request 3.0v Ext Regulator gpio failed, rc=%d\n",
+				rc);
+			gpio_free(ctrl_pdata->octa_vci_reg_en_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vddi_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+		rc = gpio_direction_output(ctrl_pdata->octa_vci_reg_en_gpio, 1);
+		if (rc) {
+			pr_err("set_direction for octa_vci_reg_en_gpio  failed, rc=%d\n",
+			       rc);
+			gpio_free(ctrl_pdata->octa_vci_reg_en_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vddi_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+	}
+
+	/* octa  reset */
+	ctrl_pdata->octa_rst_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+						 "qcom,platform-octa-reset-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->octa_rst_gpio)) {
+		pr_err("%s:%d, reset gpio not specified\n",
+						__func__, __LINE__);
+	} else {
+		rc = gpio_request(ctrl_pdata->octa_rst_gpio, "disp_rst_n");
+		if (rc) {
+			pr_err("request reset gpio failed, rc=%d\n",
+				rc);
+			gpio_free(ctrl_pdata->octa_rst_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vci_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vci_reg_en_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vddi_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+		rc = gpio_direction_output(ctrl_pdata->octa_rst_gpio, 1);
+		if (rc) {
+			pr_err("set_direction for lcd rst gpio failed, rc=%d\n",
+			       rc);
+			gpio_free(ctrl_pdata->octa_rst_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vci_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vci_reg_en_gpio);
+			if (gpio_is_valid(ctrl_pdata->octa_vddi_reg_en_gpio))
+				gpio_free(ctrl_pdata->octa_vddi_reg_en_gpio);
+			return -ENODEV;
+		}
+	}
+
+	if (pinfo->type == MIPI_CMD_PANEL) {
+		ctrl_pdata->disp_te_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
+						"qcom,platform-te-gpio", 0);
+		if (!gpio_is_valid(ctrl_pdata->disp_te_gpio)) {
+			pr_err("%s:%d, Disp_te gpio not specified\n",
+						__func__, __LINE__);
+		}
+	}
+
+	if (gpio_is_valid(ctrl_pdata->disp_te_gpio) &&
+					pinfo->type == MIPI_CMD_PANEL) {
+		rc = gpio_request(ctrl_pdata->disp_te_gpio, "disp_te");
+		if (rc) {
+			pr_err("request TE gpio failed, rc=%d\n",
+			       rc);
+			gpio_free(ctrl_pdata->disp_te_gpio);
+			return -ENODEV;
+		}
+		rc = gpio_tlmm_config(GPIO_CFG(
+				ctrl_pdata->disp_te_gpio, 1,
+				GPIO_CFG_INPUT,
+				GPIO_CFG_PULL_DOWN,
+				GPIO_CFG_2MA),
+				GPIO_CFG_ENABLE);
+
+		if (rc) {
+			pr_err("%s: unable to config tlmm = %d\n",
+				__func__, ctrl_pdata->disp_te_gpio);
+			gpio_free(ctrl_pdata->disp_te_gpio);
+			return -ENODEV;
+		}
+
+		rc = gpio_direction_input(ctrl_pdata->disp_te_gpio);
+		if (rc) {
+			pr_err("set_direction for disp_en gpio failed, rc=%d\n",
+			       rc);
+			gpio_free(ctrl_pdata->disp_te_gpio);
+			return -ENODEV;
+		}
+		pr_debug("%s: te_gpio=%d\n", __func__,
+					ctrl_pdata->disp_te_gpio);
+	}
+
+#else /* QUALCOMM default */
 	ctrl_pdata->disp_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 		"qcom,platform-enable-gpio", 0);
 
@@ -1343,6 +1535,7 @@ int dsi_panel_device_register(struct device_node *pan_node,
 			}
 		}
 	}
+#endif /* QUALCOMM default */
 
 	if (mdss_dsi_clk_init(ctrl_pdev, ctrl_pdata)) {
 		pr_err("%s: unable to initialize Dsi ctrl clks\n", __func__);
