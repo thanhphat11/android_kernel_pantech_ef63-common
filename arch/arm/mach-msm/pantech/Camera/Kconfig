@@ -1,0 +1,55 @@
+if CUST_PANTECH_H
+
+###################################################
+# PANTECH Camera Feature Section                  #
+#                                                 #
+###################################################
+# * Defined Camera common feature                 #
+###################################################
+
+###################################################
+# * Defined Camera board feature                  #
+###################################################
+
+if MACH_MSM8974_EF63K
+config DEFINE_LIST_EF63K
+	bool
+	default y
+	select PANTECH_CAMERA_EF63_SS
+	select PANTECH_CAMERA_ADD_OIS
+endif
+
+if MACH_MSM8974_EF63L
+config DEFINE_LIST_EF63L
+	bool
+	default y
+	select PANTECH_CAMERA_EF63_SS
+	select PANTECH_CAMERA_ADD_OIS
+endif
+
+if MACH_MSM8974_EF63S
+config DEFINE_LIST_EF63S
+	bool
+	default y
+	select PANTECH_CAMERA_EF63_SS
+	select PANTECH_CAMERA_ADD_OIS
+endif
+
+##############################################################
+# owner  : p12484
+# date    : 2013.12.05
+# Description : board feature
+##############################################################
+config PANTECH_CAMERA_EF63_SS
+	bool
+
+##############################################################
+# owner  : p12484
+# date    : 2014.02.13
+# Description : specific function feature
+##############################################################
+config PANTECH_CAMERA_ADD_OIS
+	bool
+
+endif
+
