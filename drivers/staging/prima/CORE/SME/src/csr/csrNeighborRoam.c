@@ -1435,7 +1435,7 @@ static tANI_BOOLEAN csrNeighborRoamProcessScanResults(tpAniSirGlobal pMac,
 #ifdef WLAN_FEATURE_ROAM_SCAN_OFFLOAD
        && !csrRoamIsRoamOffloadScanEnabled(pMac)
 #endif
-       && ((eSME_ROAM_TRIGGER_SCAN != pNeighborRoamInfo->cfgRoamEn) ||
+       && ((eSME_ROAM_TRIGGER_SCAN != pNeighborRoamInfo->cfgRoamEn) &&
            (eSME_ROAM_TRIGGER_FAST_ROAM != pNeighborRoamInfo->cfgRoamEn)))
        {
                /*
@@ -2043,29 +2043,41 @@ static eHalStatus csrNeighborRoamProcessScanComplete (tpAniSirGlobal pMac)
             }
  
         }
-
 #ifdef WLAN_FEATURE_ROAM_SCAN_OFFLOAD
-if (csrRoamIsRoamOffloadScanEnabled(pMac))
-   {
-    if (!tempVal || !roamNow)
-    {
-       if (pNeighborRoamInfo->uOsRequestedHandoff)
-       {
-          csrRoamOffloadScan(pMac, ROAM_SCAN_OFFLOAD_START, REASON_NO_CAND_FOUND_OR_NOT_ROAMING_NOW);
-          pNeighborRoamInfo->uOsRequestedHandoff = 0;
-       }
-       else
-       {
-         /* There is no candidate or We are not roaming Now.
-          * Inform the FW to restart Roam Offload Scan  */
-          csrRoamOffloadScan(pMac, ROAM_SCAN_OFFLOAD_RESTART, REASON_NO_CAND_FOUND_OR_NOT_ROAMING_NOW);
-       }
-       CSR_NEIGHBOR_ROAM_STATE_TRANSITION(eCSR_NEIGHBOR_ROAM_STATE_CONNECTED);
-    }
-   }
+        if (csrRoamIsRoamOffloadScanEnabled(pMac))
+        {
+            if (!tempVal || !roamNow)
+            {
+                if((eSME_ROAM_TRIGGER_SCAN == pNeighborRoamInfo->cfgRoamEn) ||
+                   (eSME_ROAM_TRIGGER_FAST_ROAM == pNeighborRoamInfo->cfgRoamEn))
+                {
+                    //This is ioctl based roaming if we did not find any roamable
+                    //candidate then just log it.
+                    VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                            "tempVal = %u, roamNow = %d uOsRequestedHandoff = %d",
+                            tempVal, roamNow, pNeighborRoamInfo->uOsRequestedHandoff);
+                }
+                else
+                {
+                    if (pNeighborRoamInfo->uOsRequestedHandoff)
+                    {
+                        csrRoamOffloadScan(pMac, ROAM_SCAN_OFFLOAD_START,
+                            REASON_NO_CAND_FOUND_OR_NOT_ROAMING_NOW);
+                        pNeighborRoamInfo->uOsRequestedHandoff = 0;
+                    }
+                    else
+                    {
+                        /* There is no candidate or We are not roaming Now.
+                         * Inform the FW to restart Roam Offload Scan  */
+                        csrRoamOffloadScan(pMac, ROAM_SCAN_OFFLOAD_RESTART,
+                            REASON_NO_CAND_FOUND_OR_NOT_ROAMING_NOW);
+                    }
+                }
+                CSR_NEIGHBOR_ROAM_STATE_TRANSITION(eCSR_NEIGHBOR_ROAM_STATE_CONNECTED);
+            }
+        }
 #endif
     return eHAL_STATUS_SUCCESS;
-
 }
 
 
@@ -2858,8 +2870,18 @@ VOS_STATUS csrNeighborRoamMergeChannelLists(
              __func__, inputNumOfChannels);
          return VOS_STATUS_E_INVAL;
     }
-    // Add the "new" channels in the input list to the end of the output list.
-    for (i = 0; i < inputNumOfChannels; i++)
+    if (outputNumOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
+    {
+         VOS_TRACE (VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+             "%s: Wrong Number of Output Channels %d",
+             __func__, inputNumOfChannels);
+         return VOS_STATUS_E_INVAL;
+    }
+
+    /* Add the "new" channels in the input list to the end of the output list.
+       Check added in for loop to make sure outputlist doesn't exceeds valid
+       channel list length. */
+    for (i = 0; (i < inputNumOfChannels) && (numChannels < WNI_CFG_VALID_CHANNEL_LIST_LEN); i++)
     {
         for (j = 0; j < outputNumOfChannels; j++)
         {
@@ -3303,7 +3325,7 @@ VOS_STATUS csrNeighborRoamPrepareNonOccupiedChannelList(
     tANI_U8 numOccupiedChannels = pMac->scan.occupiedChannels.numChannels;
     tANI_U8 *pOccupiedChannelList = pMac->scan.occupiedChannels.channelList;
 
-    for (i = 0; i < numOfChannels; i++)
+    for (i = 0; (i < numOfChannels &&(i < WNI_CFG_VALID_CHANNEL_LIST_LEN)); i++)
     {
         if (!csrIsChannelPresentInList(pOccupiedChannelList, numOccupiedChannels,
              pInputChannelList[i]))
@@ -3444,6 +3466,10 @@ VOS_STATUS csrNeighborRoamTransitToCFGChanScan(tpAniSirGlobal pMac)
         else
         {
             numOfChannels = pMac->scan.occupiedChannels.numChannels;
+            if (numOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
+            {
+                numOfChannels = WNI_CFG_VALID_CHANNEL_LIST_LEN;
+            }
             if (numOfChannels
 #ifdef FEATURE_WLAN_LFR
                 && ((pNeighborRoamInfo->uScanMode == SPLIT_SCAN_OCCUPIED_LIST) ||
@@ -3474,10 +3500,6 @@ VOS_STATUS csrNeighborRoamTransitToCFGChanScan(tpAniSirGlobal pMac)
                 }
                 else
                 {
-                    if (numOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
-                    {
-                        numOfChannels = WNI_CFG_VALID_CHANNEL_LIST_LEN;
-                    }
                     vos_mem_copy(channelList,
                             pMac->scan.occupiedChannels.channelList,
                             numOfChannels * sizeof(tANI_U8));
@@ -3490,10 +3512,6 @@ VOS_STATUS csrNeighborRoamTransitToCFGChanScan(tpAniSirGlobal pMac)
                 {
                     smsLog(pMac, LOGE, FL("Memory allocation for Channel list failed"));
                     return VOS_STATUS_E_RESOURCES;
-                }
-                if (numOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
-                {
-                    numOfChannels = WNI_CFG_VALID_CHANNEL_LIST_LEN;
                 }
                 vos_mem_copy(currChannelListInfo->ChannelList,
                         channelList,
@@ -3548,6 +3566,10 @@ VOS_STATUS csrNeighborRoamTransitToCFGChanScan(tpAniSirGlobal pMac)
                              &numOfChannels);
             }
 
+            if (numOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
+            {
+                numOfChannels = WNI_CFG_VALID_CHANNEL_LIST_LEN;
+            }
             currChannelListInfo->ChannelList =
                 vos_mem_malloc(numOfChannels*sizeof(tANI_U8));
 
@@ -3560,10 +3582,6 @@ VOS_STATUS csrNeighborRoamTransitToCFGChanScan(tpAniSirGlobal pMac)
             vos_mem_copy(currChannelListInfo->ChannelList,
                     channelList, numOfChannels * sizeof(tANI_U8));
 #else
-            if (numOfChannels > WNI_CFG_VALID_CHANNEL_LIST_LEN)
-            {
-                numOfChannels = WNI_CFG_VALID_CHANNEL_LIST_LEN;
-            }
             vos_mem_copy(currChannelListInfo->ChannelList,
                     (tANI_U8 *)pMac->roam.validChannelList,
                     numOfChannels * sizeof(tANI_U8));
@@ -3873,6 +3891,11 @@ eHalStatus csrNeighborRoamIndicateDisconnect(tpAniSirGlobal pMac, tANI_U8 sessio
 #endif
     tCsrRoamSession *pSession = CSR_GET_SESSION( pMac, sessionId);
 
+    if (NULL == pSession)
+    {
+        smsLog(pMac, LOGE, FL("pSession is NULL "));
+        return eHAL_STATUS_FAILURE;
+    }
     VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
                    FL("Disconnect indication on session %d in state %s"
                       "from BSSID : "
@@ -4794,6 +4817,12 @@ eHalStatus csrNeighborRoamProcessHandoffReq(tpAniSirGlobal pMac)
     tCsrRoamProfile *pProfile = NULL;
     tCsrRoamSession *pSession = CSR_GET_SESSION( pMac, pNeighborRoamInfo->csrSessionId );
     tANI_U8 i = 0;
+
+    if (NULL == pSession)
+    {
+        smsLog(pMac, LOGE, FL("pSession is NULL "));
+        return eHAL_STATUS_FAILURE;
+    }
 
     do
     {

@@ -215,6 +215,12 @@ static void __limInitStatsVars(tpAniSirGlobal pMac)
     // Heart-Beat interval value
     pMac->lim.gLimHeartBeatCount = 0;
 
+    vos_mem_zero(pMac->lim.gLimHeartBeatApMac[0],
+            sizeof(tSirMacAddr));
+    vos_mem_zero(pMac->lim.gLimHeartBeatApMac[1],
+            sizeof(tSirMacAddr));
+    pMac->lim.gLimHeartBeatApMacIndex = 0;
+
     // Statistics to keep track of no. beacons rcvd in heart beat interval
     vos_mem_set(pMac->lim.gLimHeartBeatBeaconStats,
                 sizeof(pMac->lim.gLimHeartBeatBeaconStats), 0);
@@ -355,6 +361,8 @@ static void __limInitVars(tpAniSirGlobal pMac)
 
     //Scan in Power Save Flag
     pMac->lim.gScanInPowersave = 0;
+    pMac->lim.probeCounter = 0;
+    pMac->lim.maxProbe = 0;
 }
 
 static void __limInitAssocVars(tpAniSirGlobal pMac)
@@ -390,10 +398,6 @@ static void __limInitAssocVars(tpAniSirGlobal pMac)
 
     // Place holder for Pre-authentication node list
     pMac->lim.pLimPreAuthList = NULL;
-
-    // Send Disassociate frame threshold parameters
-    pMac->lim.gLimDisassocFrameThreshold = LIM_SEND_DISASSOC_FRAME_THRESHOLD;
-    pMac->lim.gLimDisassocFrameCredit = 0;
 
     //One cache for each overlap and associated case.
     vos_mem_set(pMac->lim.protStaOverlapCache,
@@ -639,6 +643,15 @@ static tSirRetStatus __limInitConfig( tpAniSirGlobal pMac )
        return eSIR_FAILURE;
    }
 #endif
+   if (eSIR_SUCCESS !=
+       wlan_cfgGetInt(pMac, WNI_CFG_DEBUG_P2P_REMAIN_ON_CHANNEL,
+                      (tANI_U32 *)&pMac->lim.gDebugP2pRemainOnChannel))
+    {
+        limLog( pMac, LOGE,
+                "%s: Couldn't get WNI_CFG_DEBUG_P2P_REMAIN_ON_CHANNEL value",
+                 __func__);
+        pMac->lim.gDebugP2pRemainOnChannel = 0;
+   }
    return eSIR_SUCCESS;
 }
 
@@ -1182,7 +1195,6 @@ tANI_U8 limIsTimerAllowedInPowerSaveState(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
                 retStatus = FALSE;
                 break;
             /* May allow following timer messages in sleep mode */
-            case SIR_LIM_HASH_MISS_THRES_TIMEOUT:
 
             /* Safe to allow as of today, this triggers background scan
              * which will not be started if the device is in power-save mode
@@ -1688,7 +1700,9 @@ limHandleIBSScoalescing(
     tSirRetStatus   retCode;
 
     pHdr = WDA_GET_RX_MAC_HEADER(pRxPacketInfo);
-    if ( (!pBeacon->capabilityInfo.ibss) || (limCmpSSid(pMac, &pBeacon->ssId,psessionEntry) != true) )
+    if ( (!pBeacon->capabilityInfo.ibss) ||
+         (limCmpSSid(pMac, &pBeacon->ssId,psessionEntry) != true) ||
+         (psessionEntry->currentOperChannel != pBeacon->channelNumber) )
         /* Received SSID does not match => Ignore received Beacon frame. */
         retCode =  eSIR_LIM_IGNORE_BEACON;
     else
@@ -1743,9 +1757,8 @@ limDetectChangeInApCapabilities(tpAniSirGlobal pMac,
     newChannel = (tANI_U8) pBeacon->channelNumber;
 
     if ( ( false == psessionEntry->limSentCapsChangeNtf ) &&
-        ( ( ( limIsNullSsid(&pBeacon->ssId) ) ||
-          ( ( !limIsNullSsid(&pBeacon->ssId) ) &&
-             ( false == limCmpSSid(pMac, &pBeacon->ssId, psessionEntry) ) ) ) ||
+        ( ( ( !limIsNullSsid(&pBeacon->ssId) ) &&
+             ( false == limCmpSSid(pMac, &pBeacon->ssId, psessionEntry) ) ) ||
           ( (SIR_MAC_GET_ESS(apNewCaps.capabilityInfo) !=
              SIR_MAC_GET_ESS(psessionEntry->limCurrentBssCaps) ) ||
           ( SIR_MAC_GET_PRIVACY(apNewCaps.capabilityInfo) !=

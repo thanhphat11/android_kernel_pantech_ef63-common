@@ -95,6 +95,7 @@
      NULL \
 )
 
+#define CSR_MAX_NUM_COUNTRY_CODE  100
 #define CSR_IS_SELECT_5GHZ_MARGIN( pMac ) \
 ( \
    (((pMac)->roam.configParam.nSelect5GHzMargin)?eANI_BOOLEAN_TRUE:eANI_BOOLEAN_FALSE) \
@@ -587,6 +588,8 @@ typedef struct tagCsrConfig
     tANI_U32  nActiveMinChnTime;     //in units of milliseconds
     tANI_U32  nActiveMaxChnTime;     //in units of milliseconds
 
+    tANI_U32  nInitialDwellTime;     //in units of milliseconds
+
     tANI_U32  nActiveMinChnTimeBtc;     //in units of milliseconds
     tANI_U32  nActiveMaxChnTimeBtc;     //in units of milliseconds
     tANI_U8   disableAggWithBtc;
@@ -663,7 +666,6 @@ typedef struct tagCsrConfig
     tANI_BOOLEAN enableVhtFor24GHz;
 #endif
     tANI_U8   txLdpcEnable;
-    tANI_BOOLEAN  enableOxygenNwk;
 
     /*
      * Enable/Disable heartbeat offload
@@ -671,6 +673,9 @@ typedef struct tagCsrConfig
     tANI_BOOLEAN enableHeartBeatOffload;
     tANI_U8 isAmsduSupportInAMPDU;
     tANI_U8 nSelect5GHzMargin;
+    tANI_BOOLEAN initialScanSkipDFSCh;
+    tANI_U8 isCoalesingInIBSSAllowed;
+    tANI_BOOLEAN sendDeauthBeforeCon;
 }tCsrConfig;
 
 typedef struct tagCsrChannelPowerInfo
@@ -697,6 +702,11 @@ typedef struct tagCsrOsChannelMask
     tANI_U8 channelList[WNI_CFG_VALID_CHANNEL_LIST_LEN];
 }tCsrOsChannelMask;
 
+typedef struct tagCsrVotes11d
+{
+    tANI_U8 votes;
+    tANI_U8 countryCode[WNI_CFG_COUNTRY_CODE_LEN];
+}tCsrVotes11d;
 
 typedef struct tagCsrScanStruct
 {
@@ -740,8 +750,16 @@ typedef struct tagCsrScanStruct
     v_REGDOMAIN_t domainIdDefault;  //default regulatory domain
     v_REGDOMAIN_t domainIdCurrent;  //current regulatory domain
     tCsrBssid currentCountryBssid;  // Bssid for current country code
+    tANI_S8 currentCountryRSSI;     // RSSI for current country code
     tANI_BOOLEAN f11dInfoApplied;
     tANI_BOOLEAN fCancelIdleScan;
+    tANI_U8 countryCodeCount;
+    tCsrVotes11d votes11d[CSR_MAX_NUM_COUNTRY_CODE]; //counts for various advertized country codes
+    //in 11d IE from probe rsp or beacons of neighboring APs;
+    //will use the most popular one (max count)
+    tANI_U8 countryCodeElected[WNI_CFG_COUNTRY_CODE_LEN];
+
+
 #ifdef FEATURE_WLAN_WAPI
 //    tANI_U16 NumBkidCandidate;
 //    tBkidCandidateInfo BkidCandidateInfo[CSR_MAX_BKID_ALLOWED]; /* Move this as part of SessionEntry */
@@ -910,8 +928,11 @@ typedef struct tagCsrRoamSession
     tANI_U32 nWapiRspIeLength;    //the byte count for pWapiRspIE
     tANI_U8 *pWapiRspIE;  //this contain the WAPI IE in beacon/probe rsp
 #endif /* FEATURE_WLAN_WAPI */
-    tANI_U32 nAddIEScanLength;  //the byte count of pAddIeScanIE;
-    tANI_U8 *pAddIEScan; //this contains the additional IE in (unicast) probe request at the time of join
+    tANI_U32 nAddIEScanLength;  //length of addIeScan
+    /* This contains the additional IE in (unicast)
+     *  probe request at the time of join
+     */
+    tANI_U8 addIEScan[SIR_MAC_MAX_IE_LENGTH+2];
     tANI_U32 nAddIEAssocLength;      //the byte count for pAddIeAssocIE
     tANI_U8 *pAddIEAssoc; //this contains the additional IE in (re) assoc request
 
@@ -920,9 +941,6 @@ typedef struct tagCsrRoamSession
     eCsrRoamingReason roamingReason;
     tANI_BOOLEAN fCancelRoaming;
     vos_timer_t hTimerRoaming;
-    vos_timer_t hTimerIbssJoining;
-    tCsrTimerInfo ibssJoinTimerInfo;
-    tANI_BOOLEAN ibss_join_pending;
     eCsrRoamResult roamResult;  //the roamResult that is used when the roaming timer fires
     tCsrRoamJoinStatus joinFailStatusCode;    //This is the reason code for join(assoc) failure
     //The status code returned from PE for deauth or disassoc (in case of lostlink), or our own dynamic roaming
@@ -1317,6 +1335,13 @@ eHalStatus csrOpen(tpAniSirGlobal pMac);
 eHalStatus csrInitChannels(tpAniSirGlobal pMac);
 
 /* ---------------------------------------------------------------------------
+    \fn csrInitChannelsForCC
+    \brief This function must be called to issue reg hint
+    \return eHalStatus
+  -------------------------------------------------------------------------------*/
+eHalStatus csrInitChannelsForCC(tpAniSirGlobal pMac, driver_load_type init );
+
+/* ---------------------------------------------------------------------------
     \fn csrClose
     \brief To close down CSR module. There should not be any API call into CSR after calling this function.
     \return eHalStatus
@@ -1379,6 +1404,7 @@ eHalStatus csrRoamUpdateWPARSNIEs( tpAniSirGlobal pMac, tANI_U32 sessionId, tSir
 void csrSetCfgPrivacy( tpAniSirGlobal pMac, tCsrRoamProfile *pProfile, tANI_BOOLEAN fPrivacy );
 tANI_S8 csrGetInfraSessionId( tpAniSirGlobal pMac );
 tANI_U8 csrGetInfraOperationChannel( tpAniSirGlobal pMac, tANI_U8 sessionId);
+tANI_BOOLEAN csrIsSessionClientAndConnected(tpAniSirGlobal pMac, tANI_U8 sessionId);
 tANI_U8 csrGetConcurrentOperationChannel( tpAniSirGlobal pMac );
 
 eHalStatus csrRoamCopyConnectProfile(tpAniSirGlobal pMac, tANI_U32 sessionId,

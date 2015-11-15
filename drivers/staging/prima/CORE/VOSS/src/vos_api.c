@@ -574,7 +574,7 @@ VOS_STATUS vos_preStart( v_CONTEXT_t vosContext )
       if ( vStatus == VOS_STATUS_E_TIMEOUT )
       {
          VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
-          "%s: Timeout occurred before WDA complete\n", __func__);
+          "%s: Timeout occurred before WDA complete", __func__);
       }
       else
       {
@@ -696,7 +696,8 @@ VOS_STATUS vos_start( v_CONTEXT_t vosContext )
      vos_event_reset( &(gpVosContext->wdaCompleteEvent) );
      if (vos_is_logp_in_progress(VOS_MODULE_ID_VOSS, NULL))
      {
-         VOS_BUG(0);
+       if (isSsrPanicOnFailure())
+           VOS_BUG(0);
      }
      WDA_setNeedShutdown(vosContext);
      return VOS_STATUS_E_FAILURE;
@@ -1774,6 +1775,11 @@ VOS_STATUS vos_rx_mq_serialize( VOS_MQ_ID msgQueueId, vos_msg_t *pMsg )
     case VOS_MQ_ID_WDI:
     {
        pTargetMq = &(gpVosContext->vosSched.wdiRxMq);
+       break;
+    }
+    case VOS_MQ_ID_TL:
+    {
+       pTargetMq = &(gpVosContext->vosSched.tlRxMq);
        break;
     }
 
