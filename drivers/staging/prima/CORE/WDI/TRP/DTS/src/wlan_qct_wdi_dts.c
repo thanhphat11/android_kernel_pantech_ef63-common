@@ -302,7 +302,7 @@ void WDTS_FillRateInfo(wpt_uint8 macEff, wpt_int16 startRateIndex, wpt_int16 end
 {
     int i;
 
-    DTI_TRACE( DTI_TRACE_LEVEL_ERROR, "Change only 11ac rates\n");
+    DTI_TRACE( DTI_TRACE_LEVEL_ERROR, "Change only 11ac rates");
 
     for (i=startRateIndex; i<=endRateIndex; i++)
     {
@@ -619,9 +619,10 @@ wpt_status WDTS_RxPacket (void *pContext, wpt_packet *pFrame, WDTS_ChannelType c
         ucMPDUHOffset = usMPDUDOffset;
       }
 
-      if(VPKT_SIZE_BUFFER < (usMPDULen+ucMPDUHOffset)){
-        DTI_TRACE( DTI_TRACE_LEVEL_FATAL,
-                   "Invalid Frame size, might memory corrupted");
+      if(VPKT_SIZE_BUFFER_ALIGNED < (usMPDULen+ucMPDUHOffset)){
+        WPAL_TRACE(eWLAN_MODULE_DAL_DATA, eWLAN_PAL_TRACE_LEVEL_FATAL,
+                   "Invalid Frame size, might memory corrupted(%d+%d/%d)",
+                   usMPDULen, ucMPDUHOffset, VPKT_SIZE_BUFFER_ALIGNED);
 
         /* Size of the packet tranferred by the DMA engine is
          * greater than the the memory allocated for the skb

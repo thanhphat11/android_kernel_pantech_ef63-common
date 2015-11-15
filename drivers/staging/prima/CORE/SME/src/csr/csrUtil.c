@@ -93,7 +93,7 @@ tANI_U8 csrRSNOui[][ CSR_RSN_OUI_SIZE ] = {
 };
 
 #ifdef FEATURE_WLAN_WAPI
-tANI_U8 csrWapiOui[][ CSR_WAPI_OUI_SIZE ] = {
+tANI_U8 csrWapiOui[CSR_WAPI_OUI_ROW_SIZE][ CSR_WAPI_OUI_SIZE ] = {
     { 0x00, 0x14, 0x72, 0x00 }, // Reserved
     { 0x00, 0x14, 0x72, 0x01 }, // WAI certificate or SMS4
     { 0x00, 0x14, 0x72, 0x02 } // WAI PSK
@@ -1451,6 +1451,20 @@ tANI_U8 csrGetInfraOperationChannel( tpAniSirGlobal pMac, tANI_U8 sessionId)
     return channel;
 }
 
+tANI_BOOLEAN csrIsSessionClientAndConnected(tpAniSirGlobal pMac, tANI_U8 sessionId)
+{
+    tCsrRoamSession *pSession = NULL;
+    if ( CSR_IS_SESSION_VALID( pMac, sessionId) && csrIsConnStateInfra( pMac, sessionId))
+    {
+        pSession = CSR_GET_SESSION( pMac, sessionId);
+        if ((pSession->pCurRoamProfile->csrPersona == VOS_STA_MODE) ||
+           (pSession->pCurRoamProfile->csrPersona == VOS_P2P_CLIENT_MODE))
+        {
+           return TRUE;
+        }
+    }
+    return FALSE;
+}
 //This routine will return operating channel on FIRST BSS that is active/operating to be used for concurrency mode.
 //If other BSS is not up or not connected it will return 0 
 
@@ -3303,7 +3317,11 @@ static tANI_BOOLEAN csrMatchWapiOUIIndex( tpAniSirGlobal pMac, tANI_U8 AllCypher
                                             tANI_U8 cAllCyphers, tANI_U8 ouiIndex,
                                             tANI_U8 Oui[] )
 {
-    return( csrIsWapiOuiMatch( pMac, AllCyphers, cAllCyphers, csrWapiOui[ouiIndex], Oui ) );
+    if (ouiIndex < CSR_WAPI_OUI_ROW_SIZE)// since csrWapiOui row size is 3 .
+          return( csrIsWapiOuiMatch( pMac, AllCyphers, cAllCyphers,
+                                     csrWapiOui[ouiIndex], Oui ) );
+    else
+          return FALSE ;
 
 }
 #endif /* FEATURE_WLAN_WAPI */
@@ -3805,6 +3823,7 @@ tANI_U8 csrConstructRSNIe( tHalHandle hHal, tANI_U32 sessionId, tCsrRoamProfile 
     tANI_U8 *pGroupMgmtCipherSuite;
 #endif
     tDot11fBeaconIEs *pIesLocal = pIes;
+    eCsrAuthType negAuthType = eCSR_AUTH_TYPE_UNKNOWN;
 
     smsLog(pMac, LOGW, "%s called...", __func__);
 
@@ -3820,7 +3839,7 @@ tANI_U8 csrConstructRSNIe( tHalHandle hHal, tANI_U32 sessionId, tCsrRoamProfile 
         // See if the cyphers in the Bss description match with the settings in the profile.
         fRSNMatch = csrGetRSNInformation( hHal, &pProfile->AuthType, pProfile->negotiatedUCEncryptionType, 
                                             &pProfile->mcEncryptionType, &pIesLocal->RSN,
-                                            UnicastCypher, MulticastCypher, AuthSuite, &RSNCapabilities, NULL, NULL );
+                                            UnicastCypher, MulticastCypher, AuthSuite, &RSNCapabilities, &negAuthType, NULL );
         if ( !fRSNMatch ) break;
 
         pRSNIe->IeHeader.ElementID = SIR_MAC_RSN_EID;
@@ -3852,7 +3871,11 @@ tANI_U8 csrConstructRSNIe( tHalHandle hHal, tANI_U32 sessionId, tCsrRoamProfile 
 
         pPMK = (tCsrRSNPMKIe *)( ((tANI_U8 *)(&pAuthSuite->AuthOui[ 1 ])) + sizeof(tANI_U16) );
 
-        if( csrLookupPMKID( pMac, sessionId, pSirBssDesc->bssId, &(PMKId[0]) ) )
+        if (
+#ifdef FEATURE_WLAN_ESE
+        (eCSR_AUTH_TYPE_CCKM_RSN != negAuthType) &&
+#endif
+        csrLookupPMKID( pMac, sessionId, pSirBssDesc->bssId, &(PMKId[0]) ) )
         {
             pPMK->cPMKIDs = 1;
 
@@ -5833,11 +5856,10 @@ void csrReleaseProfile(tpAniSirGlobal pMac, tCsrRoamProfile *pProfile)
             pProfile->pWAPIReqIE = NULL;
         }
 #endif /* FEATURE_WLAN_WAPI */
-
-        if(pProfile->pAddIEScan)
+        if (pProfile->nAddIEScanLength)
         {
-            palFreeMemory(pMac->hHdd, pProfile->pAddIEScan);
-            pProfile->pAddIEScan = NULL;
+           memset(pProfile->addIEScan, 0 , SIR_MAC_MAX_IE_LENGTH+2);
+           pProfile->nAddIEScanLength = 0;
         }
 
         if(pProfile->pAddIEAssoc)

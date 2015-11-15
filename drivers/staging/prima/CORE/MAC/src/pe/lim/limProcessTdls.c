@@ -172,6 +172,15 @@ typedef enum tdlsLinkSetupStatus
     TDLS_SETUP_STATUS_FAILURE = 37
 }etdlsLinkSetupStatus ;
 
+/* These maps to Kernel TDLS peer capability
+ * flags and should get changed as and when necessary
+ */
+enum tdls_peer_capability {
+        TDLS_PEER_HT_CAP  = 0,
+        TDLS_PEER_VHT_CAP = 1,
+        TDLS_PEER_WMM_CAP = 2
+} eTdlsPeerCapability;
+
 /* some local defines */
 #define LINK_IDEN_BSSID_OFFSET      (0)
 #define PEER_MAC_OFFSET   (12) 
@@ -1271,7 +1280,6 @@ tSirRetStatus limSendTdlsLinkSetupReqFrame(tpAniSirGlobal pMac,
     tdlsSetupReq.QOSCapsStation.acvi_uapsd = ((pMac->lim.gLimTDLSUapsdMask & 0x02)>> 1);
     tdlsSetupReq.QOSCapsStation.acvo_uapsd = (pMac->lim.gLimTDLSUapsdMask & 0x01);
 
-
     /*
      * we will always try to init TDLS link with 11n capabilities
      * let TDLS setup response to come, and we will set our caps based
@@ -1823,7 +1831,7 @@ static tSirRetStatus limSendTdlsSetupRspFrame(tpAniSirGlobal pMac,
  */
 
 tSirRetStatus limSendTdlsLinkSetupCnfFrame(tpAniSirGlobal pMac, tSirMacAddr peerMac,
-                    tANI_U8 dialog, tpPESession psessionEntry, tANI_U8* addIe, tANI_U16 addIeLen)  
+                    tANI_U8 dialog, tANI_U32 peerCapability, tpPESession psessionEntry, tANI_U8* addIe, tANI_U16 addIeLen)
 {
     tDot11fTDLSSetupCnf  tdlsSetupCnf ;
     tANI_U32            status = 0 ;
@@ -1866,15 +1874,15 @@ tSirRetStatus limSendTdlsLinkSetupCnfFrame(tpAniSirGlobal pMac, tSirMacAddr peer
      * AP link and we wanted to QOS on direct link.
      */
 
-    /* Include HT Info IE */
-    /* Need to also check the Self Capability ??? TODO Sunil */
-    if ( true == psessionEntry->htCapability)
+     /* Check peer is VHT capable*/
+    if (CHECK_BIT(peerCapability, TDLS_PEER_VHT_CAP))
     {
-        PopulateDot11fHTInfo( pMac, &tdlsSetupCnf.HTInfo, psessionEntry );
+       PopulateDot11fVHTOperation( pMac, &tdlsSetupCnf.VHTOperation);
+       PopulateDot11fHTInfo( pMac, &tdlsSetupCnf.HTInfo, psessionEntry );
     }
-    if ( true == psessionEntry->vhtCapability)
+    else if (CHECK_BIT(peerCapability, TDLS_PEER_HT_CAP)) /* Check peer is HT capable */
     {
-        PopulateDot11fVHTOperation( pMac, &tdlsSetupCnf.VHTOperation);
+       PopulateDot11fHTInfo( pMac, &tdlsSetupCnf.HTInfo, psessionEntry );
     }
 
     /* 
@@ -2418,6 +2426,7 @@ limTdlsPopulateMatchingRateSet(tpAniSirGlobal pMac,
     tANI_U32 phyMode;
     tANI_U8 mcsSet[SIZE_OF_SUPPORTED_MCS_SET];
     isArate=0;
+    tempRateSet2.numRates = 0;
 
     // limGetPhyMode(pMac, &phyMode);
     limGetPhyMode(pMac, &phyMode, NULL);
@@ -2444,8 +2453,6 @@ limTdlsPopulateMatchingRateSet(tpAniSirGlobal pMac,
                                                   &val) != eSIR_SUCCESS)
         tempRateSet2.numRates = val;
     }
-    else
-        tempRateSet2.numRates = 0;
 
     if ((tempRateSet.numRates + tempRateSet2.numRates) > 12)
     {
@@ -2492,11 +2499,17 @@ limTdlsPopulateMatchingRateSet(tpAniSirGlobal pMac,
      * unicity of the rates so there cannot be more than 12 . Need to Check this
      * TODO Sunil.
      */
+    if (supporteRatesLength > SIR_MAC_RATESET_EID_MAX)
+    {
+       limLog( pMac, LOGW, FL("Supported rates length %d more than "
+                              "the Max limit, reset to Max"),
+                               supporteRatesLength);
+       supporteRatesLength = SIR_MAC_RATESET_EID_MAX;
+    }
     for (i = 0; i < supporteRatesLength; i++)
     {
         tempRateSet.rate[i] = pSupportedRateSet[i];
     }
-
     tempRateSet.numRates = supporteRatesLength;
 
     {
@@ -3528,7 +3541,7 @@ static tSirRetStatus limProcessTdlsSetupRspFrame(tpAniSirGlobal pMac,
     
          
     /* send TDLS confim frame to TDLS Peer STA */           
-    limSendTdlsLinkSetupCnfFrame(pMac, peerMac, tdlsSetupRsp.DialogToken.token, psessionEntry, NULL, 0) ;
+    limSendTdlsLinkSetupCnfFrame(pMac, peerMac, tdlsSetupRsp.DialogToken.token, 0, psessionEntry, NULL, 0) ;
 
     /* 
      * set the tdls_link_state to TDLS_LINK_SETUP_RSP_WAIT_STATE, and
@@ -5058,7 +5071,7 @@ tSirRetStatus limProcessSmeTdlsMgmtSendReq(tpAniSirGlobal pMac,
             break;
         case SIR_MAC_TDLS_SETUP_CNF:
             {
-                limSendTdlsLinkSetupCnfFrame(pMac, pSendMgmtReq->peerMac, pSendMgmtReq->dialog, 
+                limSendTdlsLinkSetupCnfFrame(pMac, pSendMgmtReq->peerMac, pSendMgmtReq->dialog, pSendMgmtReq->peerCapability,
                         psessionEntry, &pSendMgmtReq->addIe[0], (pSendMgmtReq->length - sizeof(tSirTdlsSendMgmtReq)));  
                 resultCode = eSIR_SME_SUCCESS;
             }
@@ -5441,53 +5454,4 @@ tSirRetStatus limDeleteTDLSPeers(tpAniSirGlobal pMac, tpPESession psessionEntry)
 
     return eSIR_SUCCESS;
 }
-#ifdef FEATURE_WLAN_TDLS_OXYGEN_DISAPPEAR_AP
-/* Get the number of TDLS peer connected in the BSS */
-int limGetTDLSPeerCount(tpAniSirGlobal pMac, tpPESession psessionEntry)
-{
-    int i,tdlsPeerCount = 0;
-    /* Check all the set bit in peerAIDBitmap and return the number of TDLS peer counts */
-    for (i = 0; i < sizeof(psessionEntry->peerAIDBitmap)/sizeof(tANI_U32); i++)
-    {
-        tANI_U32 bitmap;
-        bitmap = psessionEntry->peerAIDBitmap[i];
-        while (bitmap)
-        {
-            tdlsPeerCount++;
-            bitmap >>= 1;
-        }
-    }
-    return tdlsPeerCount;
-}
-
-void limTDLSDisappearAPTrickInd(tpAniSirGlobal pMac, tpDphHashNode pStaDs, tpPESession psessionEntry)
-{
-    tSirMsgQ  mmhMsg;
-    tSirTdlsDisappearAPInd  *pSirTdlsDisappearAPInd;
-
-    pSirTdlsDisappearAPInd = vos_mem_malloc(sizeof(tSirTdlsDisappearAPInd));
-    if ( NULL == pSirTdlsDisappearAPInd )
-    {
-        limLog(pMac, LOGP, FL("AllocateMemory failed for eWNI_SME_TDLS_DEL_ALL_PEER_IND"));
-        return;
-    }
-
-    //messageType
-    pSirTdlsDisappearAPInd->messageType = eWNI_SME_TDLS_AP_DISAPPEAR_IND;
-    pSirTdlsDisappearAPInd->length = sizeof(tSirTdlsDisappearAPInd);
-
-    //sessionId
-    pSirTdlsDisappearAPInd->sessionId = psessionEntry->smeSessionId;
-    pSirTdlsDisappearAPInd->staId = pStaDs->staIndex ;
-    vos_mem_copy( pSirTdlsDisappearAPInd->staAddr,
-                           (tANI_U8 *) pStaDs->staAddr, sizeof(tSirMacAddr));
-
-    mmhMsg.type = eWNI_SME_TDLS_AP_DISAPPEAR_IND;
-    mmhMsg.bodyptr = pSirTdlsDisappearAPInd;
-    mmhMsg.bodyval = 0;
-
-
-    limSysProcessMmhMsgApi(pMac, &mmhMsg, ePROT);
-}
-#endif
 #endif

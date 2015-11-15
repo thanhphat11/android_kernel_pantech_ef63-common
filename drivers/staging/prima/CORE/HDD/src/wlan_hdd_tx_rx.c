@@ -57,13 +57,19 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/etherdevice.h>
+#include <linux/ratelimit.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
+#include <soc/qcom/subsystem_restart.h>
+#else
+#include <mach/subsystem_restart.h>
+#endif
 
 #include <wlan_hdd_p2p.h>
 #include <linux/wireless.h>
 #include <net/cfg80211.h>
 #include <net/ieee80211_radiotap.h>
 #include "sapApi.h"
-
+#include <vos_sched.h>
 #ifdef FEATURE_WLAN_TDLS
 #include "wlan_hdd_tdls.h"
 #endif
@@ -86,6 +92,14 @@ const v_U8_t hdd_QdiscAcToTlAC[] = {
    WLANTL_AC_BE,
    WLANTL_AC_BK,
 };
+
+#define HDD_TX_TIMEOUT_RATELIMIT_INTERVAL 20*HZ
+#define HDD_TX_TIMEOUT_RATELIMIT_BURST    1
+#define HDD_TX_STALL_SSR_THRESHOLD        5
+
+static DEFINE_RATELIMIT_STATE(hdd_tx_timeout_rs,                 \
+                              HDD_TX_TIMEOUT_RATELIMIT_INTERVAL, \
+                              HDD_TX_TIMEOUT_RATELIMIT_BURST);
 
 static struct sk_buff* hdd_mon_tx_fetch_pkt(hdd_adapter_t* pAdapter);
 
@@ -224,6 +238,76 @@ static VOS_STATUS hdd_flush_tx_queues( hdd_adapter_t *pAdapter )
    return status;
 }
 
+/**============================================================================
+  @brief hdd_flush_ibss_tx_queues() - Utility function to flush the TX queues
+                                      in IBSS mode
+
+  @param pAdapter : [in] pointer to adapter context
+                  : [in] Staion Id
+  @return         : VOS_STATUS_E_FAILURE if any errors encountered
+                  : VOS_STATUS_SUCCESS otherwise
+  ===========================================================================*/
+void hdd_flush_ibss_tx_queues( hdd_adapter_t *pAdapter, v_U8_t STAId)
+{
+   v_U8_t i;
+   v_SIZE_t size = 0;
+   v_U8_t skbStaIdx;
+   skb_list_node_t *pktNode = NULL;
+   hdd_list_node_t *tmp = NULL, *next = NULL;
+   struct netdev_queue *txq;
+   struct sk_buff *skb = NULL;
+
+   for (i = 0; i < NUM_TX_QUEUES; i++)
+   {
+      spin_lock_bh(&pAdapter->wmm_tx_queue[i].lock);
+
+      if ( list_empty( &pAdapter->wmm_tx_queue[i].anchor ) )
+      {
+         spin_unlock_bh(&pAdapter->wmm_tx_queue[i].lock);
+         continue;
+      }
+
+      /* Iterate through the queue and identify the data for STAId */
+      list_for_each_safe(tmp, next, &pAdapter->wmm_tx_queue[i].anchor)
+      {
+         pktNode = list_entry(tmp, skb_list_node_t, anchor);
+         if (pktNode != NULL)
+         {
+            skb = pktNode->skb;
+
+            /* Get the STAId from data */
+            skbStaIdx = *(v_U8_t *)(((v_U8_t *)(skb->data)) - 1);
+            if (skbStaIdx == STAId)
+            {
+               /* Data for STAId is freed along with the queue node */
+               kfree_skb(skb);
+               list_del(tmp);
+
+               ++pAdapter->hdd_stats.hddTxRxStats.txFlushed;
+               ++pAdapter->hdd_stats.hddTxRxStats.txFlushedAC[i];
+               pAdapter->wmm_tx_queue[i].count--;
+            }
+         }
+      }
+
+      /* Restart the queue only-if suspend and the queue was flushed */
+      hdd_list_size( &pAdapter->wmm_tx_queue[i], &size );
+      txq = netdev_get_tx_queue(pAdapter->dev, i);
+
+      if (VOS_TRUE == pAdapter->isTxSuspended[i] &&
+          size <= HDD_TX_QUEUE_LOW_WATER_MARK &&
+          netif_tx_queue_stopped(txq) )
+      {
+         netif_tx_start_queue(txq);
+         pAdapter->isTxSuspended[i] = VOS_FALSE;
+         ++pAdapter->hdd_stats.hddTxRxStats.txDequeDePressured;
+         ++pAdapter->hdd_stats.hddTxRxStats.txDequeDePressuredAC[i];
+      }
+
+      spin_unlock_bh(&pAdapter->wmm_tx_queue[i].lock);
+   }
+}
+
 static struct sk_buff* hdd_mon_tx_fetch_pkt(hdd_adapter_t* pAdapter)
 {
    skb_list_node_t *pktNode = NULL;
@@ -289,7 +373,7 @@ void hdd_mon_tx_mgmt_pkt(hdd_adapter_t* pAdapter)
    hdd_adapter_t* pMonAdapter = NULL;
    struct ieee80211_hdr *hdr;
 
-   if (pAdapter == NULL )
+   if (pAdapter == NULL)
    {
       VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
        FL("pAdapter is NULL"));
@@ -298,7 +382,12 @@ void hdd_mon_tx_mgmt_pkt(hdd_adapter_t* pAdapter)
    }
 
    pMonAdapter = hdd_get_adapter( pAdapter->pHddCtx, WLAN_HDD_MONITOR );
-
+   if (pMonAdapter == NULL)
+   {
+       hddLog(VOS_TRACE_LEVEL_ERROR,
+              "%s: pMonAdapter is NULL", __func__);
+       return;
+   }
    cfgState = WLAN_HDD_GET_CFG_STATE_PTR( pAdapter );
 
    if( NULL != cfgState->buf )
@@ -557,21 +646,34 @@ int hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
    v_BOOL_t granted;
    v_U8_t STAId = WLAN_MAX_STA_COUNT;
    hdd_station_ctx_t *pHddStaCtx = &pAdapter->sessionCtx.station;
-   
    v_BOOL_t txSuspended = VOS_FALSE;
 
    ++pAdapter->hdd_stats.hddTxRxStats.txXmitCalled;
 
-   if (unlikely(netif_queue_stopped(dev))) {
-       VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+   if (unlikely(netif_subqueue_stopped(dev, skb))) {
+       VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                   "%s is called when netif TX %d is disabled",
                   __func__, skb->queue_mapping);
        return NETDEV_TX_BUSY;
    }
 
+   //Get TL AC corresponding to Qdisc queue index/AC.
+   ac = hdd_QdiscAcToTlAC[skb->queue_mapping];
+
    if (WLAN_HDD_IBSS == pAdapter->device_mode)
    {
       v_MACADDR_t *pDestMacAddress = (v_MACADDR_t*)skb->data;
+
+      if (eConnectionState_IbssConnected != pHddStaCtx->conn_info.connState)
+      {
+         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                   "%s: Tx frame in disconnected state in IBSS mode", __func__);
+         ++pAdapter->stats.tx_dropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDroppedAC[ac];
+         kfree_skb(skb);
+         return NETDEV_TX_OK;
+      }
 
       STAId = *(v_U8_t *)(((v_U8_t *)(skb->data)) - 1);
 
@@ -580,15 +682,16 @@ int hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
            vos_is_macaddr_group(pDestMacAddress)))
       {
          STAId = IBSS_BROADCAST_STAID;
-         VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_INFO_LOW,
+         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO_LOW,
                     "%s: BC/MC packet", __func__);
       }
       else if (STAId == HDD_WLAN_INVALID_STA_ID)
       {
-         VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_INFO,
-                    "%s: Received Unicast frame with invalid staID", __func__);
+         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                   "%s: Received Unicast frame with invalid staID", __func__);
          ++pAdapter->stats.tx_dropped;
          ++pAdapter->hdd_stats.hddTxRxStats.txXmitDropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDroppedAC[ac];
          kfree_skb(skb);
          return NETDEV_TX_OK;
       }
@@ -597,8 +700,6 @@ int hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
    {
       STAId = pHddStaCtx->conn_info.staId[0];
    }
-   //Get TL AC corresponding to Qdisc queue index/AC.
-   ac = hdd_QdiscAcToTlAC[skb->queue_mapping];
 
    //user priority from IP header, which is already extracted and set from
    //select_queue call back function
@@ -622,18 +723,48 @@ int hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
             * if it is in the mainline code and if the log level is enabled by someone for debugging
            VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_INFO,"%s:Queue is Filling up.Inform TL again about pending packets", __func__);*/
 
-      WLANTL_STAPktPending( (WLAN_HDD_GET_CTX(pAdapter))->pvosContext,
-                             STAId, ac );
+      status = WLANTL_STAPktPending( (WLAN_HDD_GET_CTX(pAdapter))->pvosContext,
+                                    STAId, ac
+                                    );
+      if ( !VOS_IS_STATUS_SUCCESS( status ) )
+      {
+         VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                    "%s: WLANTL_STAPktPending() returned error code %d",
+                    __func__, status);
+         ++pAdapter->stats.tx_dropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDroppedAC[ac];
+         kfree_skb(skb);
+         spin_unlock(&pAdapter->wmm_tx_queue[ac].lock);
+         return NETDEV_TX_OK;
+      }
    }
    //If we have already reached the max queue size, disable the TX queue
    if ( pAdapter->wmm_tx_queue[ac].count == pAdapter->wmm_tx_queue[ac].max_size)
    {
-      ++pAdapter->hdd_stats.hddTxRxStats.txXmitBackPressured;
-      ++pAdapter->hdd_stats.hddTxRxStats.txXmitBackPressuredAC[ac];
-
-      netif_tx_stop_queue(netdev_get_tx_queue(dev, skb_get_queue_mapping(skb)));
-      pAdapter->isTxSuspended[ac] = VOS_TRUE;
-      txSuspended = VOS_TRUE;
+      if (WLAN_HDD_IBSS != pAdapter->device_mode)
+      {
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitBackPressured;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitBackPressuredAC[ac];
+         netif_tx_stop_queue(netdev_get_tx_queue(dev, skb_get_queue_mapping(skb)));
+         pAdapter->isTxSuspended[ac] = VOS_TRUE;
+         txSuspended = VOS_TRUE;
+      }
+      else
+      {
+         /* In IBSS when a IBSS peer departs, there is no explicit
+            DEAUTH/DISASSOC to detect peer has left the N/W. The only way to
+            detect peer leaving is via heartbeat which is of the order of few
+            seconds. Hence do not back pressure during IBSS as one peer leaving
+            can potentially throttle traffic for other peers in the N/W
+         */
+         ++pAdapter->stats.tx_dropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDropped;
+         ++pAdapter->hdd_stats.hddTxRxStats.txXmitDroppedAC[ac];
+         kfree_skb(skb);
+         spin_unlock(&pAdapter->wmm_tx_queue[ac].lock);
+         return NETDEV_TX_OK;
+      }
    }
 
    /* If 3/4th of the max queue size is used then enable the flag.
@@ -642,8 +773,6 @@ int hdd_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
    {
       if (pAdapter->wmm_tx_queue[ac].count >= HDD_TX_QUEUE_LOW_WATER_MARK)
       {
-          VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
-                     "%s: Best Effort AC Tx queue is 3/4th full", __func__);
           pAdapter->isVosLowResource = VOS_TRUE;
       }
       else
@@ -768,14 +897,12 @@ VOS_STATUS hdd_Ibss_GetStaId(hdd_station_ctx_t *pHddStaCtx, v_MACADDR_t *pMacAdd
 }
 
 /**============================================================================
-  @brief hdd_tx_timeout() - Function called by OS if there is any
-  timeout during transmission. Since HDD simply enqueues packet
-  and returns control to OS right away, this would never be invoked
+  @brief __hdd_tx_timeout() - Function handles timeout during transmission.
 
-  @param dev : [in] pointer to Libra network device
+  @param dev : [in] pointer to network device
   @return    : None
   ===========================================================================*/
-void hdd_tx_timeout(struct net_device *dev)
+void __hdd_tx_timeout(struct net_device *dev)
 {
    hdd_adapter_t *pAdapter =  WLAN_HDD_GET_PRIV_PTR(dev);
    struct netdev_queue *txq;
@@ -784,19 +911,29 @@ void hdd_tx_timeout(struct net_device *dev)
    VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
       "%s: Transmission timeout occurred", __func__);
 
+   if ( NULL == pAdapter )
+   {
+      VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+              FL("pAdapter is NULL"));
+      VOS_ASSERT(0);
+      return;
+   }
+
+   ++pAdapter->hdd_stats.hddTxRxStats.txTimeoutCount;
+
    //Getting here implies we disabled the TX queues for too long. Queues are 
    //disabled either because of disassociation or low resource scenarios. In
    //case of disassociation it is ok to ignore this. But if associated, we have
    //do possible recovery here
 
-   VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+   VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
               "num_bytes AC0: %d AC1: %d AC2: %d AC3: %d",
               pAdapter->wmm_tx_queue[0].count,
               pAdapter->wmm_tx_queue[1].count,
               pAdapter->wmm_tx_queue[2].count,
               pAdapter->wmm_tx_queue[3].count);
 
-   VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+   VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
               "tx_suspend AC0: %d AC1: %d AC2: %d AC3: %d",
               pAdapter->isTxSuspended[0],
               pAdapter->isTxSuspended[1],
@@ -806,14 +943,57 @@ void hdd_tx_timeout(struct net_device *dev)
    for (i = 0; i < 8; i++)
    {
       txq = netdev_get_tx_queue(dev, i);
-      VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+      VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
                 "Queue%d status: %d", i, netif_tx_queue_stopped(txq));
    }
 
-   VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+   VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
               "carrier state: %d", netif_carrier_ok(dev));
-} 
 
+   /* continuousTxTimeoutCount will be reset whenever TL fetches packet
+    * from HDD
+    */
+   ++pAdapter->hdd_stats.hddTxRxStats.continuousTxTimeoutCount;
+
+   if (pAdapter->hdd_stats.hddTxRxStats.continuousTxTimeoutCount >
+       HDD_TX_STALL_SSR_THRESHOLD)
+   {
+       // Driver could not recover, issue SSR
+       VOS_TRACE(VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+                 "%s: Cannot recover from Data stall Issue SSR",
+                   __func__);
+       WLANTL_FatalError();
+       return;
+   }
+
+   /* If Tx stalled for a long time then *hdd_tx_timeout* is called
+    * every 5sec. The TL debug spits out a lot of information on the
+    * serial console, if it is called every time *hdd_tx_timeout* is
+    * called then we may get a watchdog bite on the Application
+    * processor, so ratelimit the TL debug logs.
+    */
+   if (__ratelimit(&hdd_tx_timeout_rs))
+   {
+      hdd_wmm_tx_snapshot(pAdapter);
+      WLANTL_TLDebugMessage(VOS_TRUE);
+   }
+
+}
+
+/**============================================================================
+  @brief hdd_tx_timeout() - Function called by OS if there is any
+  timeout during transmission. Since HDD simply enqueues packet
+  and returns control to OS right away, this would never be invoked
+
+  @param dev : [in] pointer to network device
+  @return    : None
+  ===========================================================================*/
+void hdd_tx_timeout(struct net_device *dev)
+{
+    vos_ssr_protect(__func__);
+    __hdd_tx_timeout(dev);
+    vos_ssr_unprotect(__func__);
+}
 
 /**============================================================================
   @brief hdd_stats() - Function registered with the Linux OS for 
@@ -943,9 +1123,10 @@ v_BOOL_t hdd_IsEAPOLPacket( vos_pkt_t *pVosPacket )
     
     vosStatus = vos_pkt_peek_data( pVosPacket, (v_SIZE_t)HDD_ETHERTYPE_802_1_X_FRAME_OFFSET,
                           &pBuffer, HDD_ETHERTYPE_802_1_X_SIZE );
-    if (VOS_IS_STATUS_SUCCESS( vosStatus ) )
+    if ( VOS_IS_STATUS_SUCCESS( vosStatus ) )
     {
-       if ( vos_be16_to_cpu( *(unsigned short*)pBuffer ) == HDD_ETHERTYPE_802_1_X )
+       if ( pBuffer && *(unsigned short*)pBuffer ==
+                             vos_cpu_to_be16(HDD_ETHERTYPE_802_1_X) )
        {
           fEAPOL = VOS_TRUE;
        }
@@ -954,6 +1135,35 @@ v_BOOL_t hdd_IsEAPOLPacket( vos_pkt_t *pVosPacket )
    return fEAPOL;
 }
 
+/**============================================================================
+  @brief hdd_IsARP() - Checks the packet is ARP or not.
+
+  @param pVosPacket : [in] pointer to vos packet
+  @return         : VOS_TRUE if the packet is ARP
+                  : VOS_FALSE otherwise
+  ===========================================================================*/
+
+v_BOOL_t hdd_IsARP( vos_pkt_t *pVosPacket )
+{
+    VOS_STATUS vosStatus  = VOS_STATUS_SUCCESS;
+    v_BOOL_t   fIsARP     = VOS_FALSE;
+    void       *pBuffer   = NULL;
+
+
+    vosStatus = vos_pkt_peek_data( pVosPacket,
+                           (v_SIZE_t)HDD_ETHERTYPE_802_1_X_FRAME_OFFSET,
+                          &pBuffer, HDD_ETHERTYPE_802_1_X_SIZE );
+    if ( VOS_IS_STATUS_SUCCESS( vosStatus ) )
+    {
+       if ( pBuffer && *(unsigned short*)pBuffer ==
+                                 vos_cpu_to_be16(HDD_ETHERTYPE_ARP) )
+       {
+          fIsARP = VOS_TRUE;
+       }
+    }
+
+   return fIsARP;
+}
 
 #ifdef FEATURE_WLAN_WAPI // Need to update this function
 /**============================================================================
@@ -976,7 +1186,8 @@ v_BOOL_t hdd_IsWAIPacket( vos_pkt_t *pVosPacket )
 
     if (VOS_IS_STATUS_SUCCESS( vosStatus ) )
     {
-       if ( vos_be16_to_cpu( *(unsigned short*)pBuffer ) == HDD_ETHERTYPE_WAI)
+       if ( pBuffer && *(unsigned short*)pBuffer ==
+                               vos_cpu_to_be16(HDD_ETHERTYPE_WAI) )
        {
           fIsWAI = VOS_TRUE;
        }
@@ -1084,9 +1295,9 @@ VOS_STATUS hdd_tx_fetch_packet_cbk( v_VOID_t *vosContext,
    v_TIME_t timestamp;
    WLANTL_ACEnumType newAc;
    v_SIZE_t size = 0;
+   v_U16_t packet_size;
    tANI_U8   acAdmitted, i;
    v_U8_t proto_type = 0;
-
    //Sanity check on inputs
    if ( ( NULL == vosContext ) || 
         ( NULL == pStaId ) || 
@@ -1275,15 +1486,19 @@ VOS_STATUS hdd_tx_fetch_packet_cbk( v_VOID_t *vosContext,
                                           pHddCtx->cfg_ini->gEnableDebugLog);
       if (VOS_PKT_PROTO_TYPE_EAPOL & proto_type)
       {
-         VOS_TRACE(VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+         VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                    "STA TX EAPOL");
       }
       else if (VOS_PKT_PROTO_TYPE_DHCP & proto_type)
       {
-         VOS_TRACE(VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+         VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                    "STA TX DHCP");
       }
    }
+
+   vos_pkt_get_packet_length( pVosPacket,&packet_size );
+   if( HDD_ETHERTYPE_ARP_SIZE == packet_size )
+      pPktMetaInfo->ucIsArp = hdd_IsARP( pVosPacket ) ? 1 : 0;
 
 #ifdef FEATURE_WLAN_WAPI
    // Override usIsEapol value when its zero for WAPI case
@@ -1372,6 +1587,7 @@ VOS_STATUS hdd_tx_fetch_packet_cbk( v_VOID_t *vosContext,
    ++pAdapter->stats.tx_packets;
    ++pAdapter->hdd_stats.hddTxRxStats.txFetchDequeued;
    ++pAdapter->hdd_stats.hddTxRxStats.txFetchDequeuedAC[ac];
+   pAdapter->hdd_stats.hddTxRxStats.continuousTxTimeoutCount = 0;
 
    if((pHddCtx->cfg_ini->thermalMitigationEnable) &&
       (WLAN_HDD_INFRA_STATION == pAdapter->device_mode))
@@ -1594,7 +1810,7 @@ VOS_STATUS hdd_rx_packet_cbk( v_VOID_t *vosContext,
             VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_INFO_MED,
                       "rx extract mac:" MAC_ADDRESS_STR,
                       MAC_ADDR_ARRAY(mac) );
-            curr_peer = wlan_hdd_tdls_find_peer(pAdapter, mac);
+            curr_peer = wlan_hdd_tdls_find_peer(pAdapter, mac, TRUE);
             if ((NULL != curr_peer) && (eTDLS_LINK_CONNECTED == curr_peer->link_status)
                  && (TRUE == pRxMetaInfo->isStaTdls))
             {
@@ -1608,23 +1824,21 @@ VOS_STATUS hdd_rx_packet_cbk( v_VOID_t *vosContext,
         }
     }
 #endif
-
       if (pHddCtx->cfg_ini->gEnableDebugLog)
       {
          proto_type = vos_pkt_get_proto_type(skb,
                                              pHddCtx->cfg_ini->gEnableDebugLog);
          if (VOS_PKT_PROTO_TYPE_EAPOL & proto_type)
          {
-            VOS_TRACE(VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+            VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                       "STA RX EAPOL");
          }
          else if (VOS_PKT_PROTO_TYPE_DHCP & proto_type)
          {
-            VOS_TRACE(VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_ERROR,
+            VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
                       "STA RX DHCP");
          }
       }
-
       skb->dev = pAdapter->dev;
       skb->protocol = eth_type_trans(skb, skb->dev);
       skb->ip_summed = CHECKSUM_NONE;
@@ -1736,9 +1950,11 @@ void hdd_tx_rx_pkt_cnt_stat_timer_handler( void *phddctx)
                         "%s: One of the interface is connected check for scan",
                         __func__);
                 VOS_TRACE( VOS_MODULE_ID_HDD_DATA, VOS_TRACE_LEVEL_INFO,
-                       "%s: pkt_tx_count: %d, pkt_rx_count: %d", __func__,
-                                 pAdapter->hdd_stats.hddTxRxStats.pkt_tx_count,
-                                 pAdapter->hdd_stats.hddTxRxStats.pkt_rx_count);
+                       "%s: pkt_tx_count: %d, pkt_rx_count: %d "
+                       "miracast = %d", __func__,
+                        pAdapter->hdd_stats.hddTxRxStats.pkt_tx_count,
+                        pAdapter->hdd_stats.hddTxRxStats.pkt_rx_count,
+                        pHddCtx->drvr_miracast);
 
                 vos_timer_start(&pHddCtx->tx_rx_trafficTmr,
                                  cfg_param->trafficMntrTmrForSplitScan);
@@ -1747,7 +1963,8 @@ void hdd_tx_rx_pkt_cnt_stat_timer_handler( void *phddctx)
                                        cfg_param->txRxThresholdForSplitScan) ||
                     (pAdapter->hdd_stats.hddTxRxStats.pkt_rx_count >
                                        cfg_param->txRxThresholdForSplitScan) ||
-                    pHddCtx->drvr_miracast)
+                    pHddCtx->drvr_miracast ||
+                    (WLAN_HDD_P2P_GO == pAdapter->device_mode))
                 {
                     pAdapter->hdd_stats.hddTxRxStats.pkt_tx_count = 0;
                     pAdapter->hdd_stats.hddTxRxStats.pkt_rx_count = 0;

@@ -239,7 +239,7 @@ limDeferMsg(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
     }
     else
     {
-        limLog(pMac, LOGE, FL("Dropped lim message (0x%X)"), pMsg->type);
+        limLog(pMac, LOG1, FL("Dropped lim message (0x%X)"), pMsg->type);
         MTRACE(macTraceMsgRx(pMac, NO_SESSION, LIM_TRACE_MAKE_RXMSG(pMsg->type, LIM_MSG_DROPPED));)
     }
 
@@ -478,10 +478,8 @@ limCheckMgmtRegisteredFrames(tpAniSirGlobal pMac, tANI_U8 *pBd,
                 FL("rcvd frame match with registered frame params"));
 
         /* Indicate this to SME */
-        limSendSmeMgmtFrameInd( pMac, pHdr->fc.subType, (tANI_U8*)pHdr,
-                     WDA_GET_RX_PAYLOAD_LEN(pBd) + sizeof(tSirMacMgmtHdr),
-                     pLimMgmtRegistration->sessionId,
-                     WDA_GET_RX_CH(pBd), psessionEntry, 0);
+        limSendSmeMgmtFrameInd( pMac, pLimMgmtRegistration->sessionId,
+                                pBd, psessionEntry, 0);
 
         if ( (type == SIR_MAC_MGMT_FRAME) && (fc.type == SIR_MAC_MGMT_FRAME)
               && (subType == SIR_MAC_MGMT_RESERVED15) )
@@ -1682,26 +1680,6 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
             }
             else
             {
-#if defined(FEATURE_WLAN_TDLS) && defined(FEATURE_WLAN_TDLS_OXYGEN_DISAPPEAR_AP)
-                 tpPESession psessionEntry = &pMac->lim.gpSession[0];
-                 for (i=0; i < pMac->lim.maxBssId; i++)
-                 {
-                     psessionEntry = &pMac->lim.gpSession[i];
-                     if ((psessionEntry != NULL) && (psessionEntry->valid) &&
-                         ((psessionEntry->pePersona == VOS_P2P_CLIENT_MODE) ||
-                         (psessionEntry->pePersona == VOS_STA_MODE)))
-                     {
-                         if ((TRUE == pMac->lim.gLimTDLSOxygenSupport) &&
-                             (limGetTDLSPeerCount(pMac, psessionEntry) != 0)) {
-                             if (limMsg->bodyptr) {
-                                 vos_mem_free(limMsg->bodyptr);
-                                 limMsg->bodyptr = NULL;
-                             }
-                             return;
-                         }
-                     }
-                 }
-#endif
                  if (NULL == limMsg->bodyptr)
                  {
                      limHandleHeartBeatTimeout(pMac);
@@ -1728,16 +1706,6 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
             //if (pMac->sys.gSysEnableScanMode)
             pMac->lim.gLimReportBackgroundScanResults = FALSE;
             limTriggerBackgroundScan(pMac);
-            break;
-
-
-        case SIR_LIM_HASH_MISS_THRES_TIMEOUT:
-
-            /*
-            ** clear the credit to the send disassociate frame bucket
-            **/
-
-            pMac->lim.gLimDisassocFrameCredit = 0;
             break;
 
         case SIR_LIM_CNF_WAIT_TIMEOUT:
