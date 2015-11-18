@@ -72,7 +72,6 @@ static inline u32 mdss_mdp_get_pclk_rate(struct mdss_mdp_ctl *ctl)
 		pinfo->clk_rate;
 }
 
-#ifdef CONFIG_F_QUALCOMM_MOVIE_PLAYER_MDP_UNDERRUN
 static inline u32 mdss_mdp_clk_fudge_factor(struct mdss_mdp_mixer *mixer,
 						u32 rate)
 {
@@ -91,7 +90,6 @@ static inline u32 mdss_mdp_clk_fudge_factor(struct mdss_mdp_mixer *mixer,
 
 	return rate;
 }
-#endif
 
 static u32 __mdss_mdp_ctrl_perf_ovrd_helper(struct mdss_mdp_mixer *mixer,
 		u32 *npipe)
@@ -233,9 +231,6 @@ static int mdss_mdp_ctl_perf_commit(struct mdss_data_type *mdata, u32 flags)
 		mdss_mdp_bus_scale_set_quota(bus_ab_quota, bus_ib_quota);
 	}
 	if (flags & MDSS_MDP_PERF_UPDATE_CLK) {
-#ifndef CONFIG_F_QUALCOMM_MOVIE_PLAYER_MDP_UNDERRUN
-		clk_rate = MDSS_MDP_CLK_FUDGE_FACTOR(clk_rate);
-#endif
 		pr_debug("update clk rate = %lu HZ\n", clk_rate);
 		mdss_mdp_set_clk_rate(clk_rate);
 	}
@@ -311,16 +306,12 @@ int mdss_mdp_perf_calc_pipe(struct mdss_mdp_pipe *pipe,
 		perf->ib_quota = (quota / pipe->dst.h) * v_total;
 	}
 	perf->ab_quota = quota;
-#ifdef CONFIG_F_QUALCOMM_MOVIE_PLAYER_MDP_UNDERRUN
 	rate = mdss_mdp_clk_fudge_factor(mixer, rate);
-#endif
 	perf->mdp_clk_rate = rate;
 
-#ifdef CONFIG_F_QUALCOMM_MOVIE_PLAYER_MDP_UNDERRUN
 	pr_debug("src(w,h)(%d,%d) dst(w,h)(%d,%d) v_total=%d v_deci=%d fps=%d\n",
 		pipe->src.w, pipe->src.h, pipe->dst.w, pipe->dst.h, v_total,
 		pipe->vert_deci, fps);
-#endif
 	pr_debug("mixer=%d pnum=%d clk_rate=%u bus ab=%u ib=%u\n",
 		 mixer->num, pipe->num, rate, perf->ab_quota, perf->ib_quota);
 
@@ -354,12 +345,7 @@ static void mdss_mdp_perf_mixer_update(struct mdss_mdp_mixer *mixer,
 			v_total = mixer->height;
 		}
 		*clk_rate = mixer->width * v_total * fps;
-#ifndef CONFIG_F_QUALCOMM_MOVIE_PLAYER_MDP_UNDERRUN
-		if (pinfo && pinfo->lcdc.v_back_porch < MDP_MIN_VBP)
-			*clk_rate = MDSS_MDP_CLK_FUDGE_FACTOR(*clk_rate);
-#else
 		*clk_rate = mdss_mdp_clk_fudge_factor(mixer, *clk_rate);
-#endif
 
 		if (!pinfo) {
 			/* perf for bus writeback */
