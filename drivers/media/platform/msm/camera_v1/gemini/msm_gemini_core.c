@@ -28,7 +28,7 @@ int msm_gemini_core_reset(uint8_t op_mode, void *base, int size)
 {
 	unsigned long flags;
 	int rc = 0;
-	int tm = 500; /*500ms*/
+	int tm = 500;
 	memset(&fe_pingpong_buf, 0, sizeof(fe_pingpong_buf));
 	fe_pingpong_buf.is_fe = 1;
 	we_pingpong_index = 0;
@@ -117,7 +117,7 @@ int msm_gemini_core_we_buf_update(struct msm_gemini_core_buf *buf)
 
 int msm_gemini_core_we_buf_reset(struct msm_gemini_hw_buf *buf)
 {
-	int i = 0;
+	int i;
 	for (i = 0; i < 2; i++) {
 		if (we_pingpong_buf.buf[i].y_buffer_addr
 					== buf->y_buffer_addr)
@@ -142,7 +142,7 @@ void *msm_gemini_core_framedone_irq(int gemini_irq_status, void *context)
 	buf_p = msm_gemini_hw_pingpong_active_buffer(&we_pingpong_buf);
 	if (buf_p) {
 		buf_p->framedone_len = msm_gemini_hw_encode_output_size();
-		pr_debug("%s:%d] framedone_len %d\n", __func__, __LINE__,
+		GMN_DBG("%s:%d] framedone_len %d\n", __func__, __LINE__,
 			buf_p->framedone_len);
 	}
 
@@ -180,7 +180,7 @@ irqreturn_t msm_gemini_core_irq(int irq_num, void *context)
 	GMN_DBG("%s:%d] gemini_irq_status = %0x\n", __func__, __LINE__,
 		gemini_irq_status);
 
-	/*For reset and framedone IRQs, clear all bits*/
+	/* For reset and framedone IRQs, clear all bits */
 	if (gemini_irq_status & 0x400) {
 		wake_up(&reset_wait);
 		msm_gemini_hw_irq_clear(HWIO_JPEG_IRQ_CLEAR_RMSK,

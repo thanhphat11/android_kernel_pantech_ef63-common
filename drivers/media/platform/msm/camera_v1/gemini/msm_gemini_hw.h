@@ -13,10 +13,10 @@
 #ifndef MSM_GEMINI_HW_H
 #define MSM_GEMINI_HW_H
 
-#include <media/msm_gemini.h>
-#include "msm_gemini_hw_reg.h"
 #include <linux/msm_ion.h>
+#include <media/msm_gemini.h>
 #include <mach/iommu_domains.h>
+#include "msm_gemini_hw_reg.h"
 
 struct msm_gemini_hw_buf {
 	struct msm_gemini_buf vbuf;

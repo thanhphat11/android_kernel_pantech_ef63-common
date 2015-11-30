@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2011,2013 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,8 +14,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <mach/board.h>
-
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/device.h>
@@ -23,12 +21,13 @@
 #include <media/msm_gemini.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
-
-#include "msm.h"
+#include <mach/board.h>
+#include "../msm.h"
 #include "msm_gemini_sync.h"
 #include "msm_gemini_common.h"
 
 #define MSM_GEMINI_NAME "gemini"
+#define MSM_GEMINI_DRV_NAME "msm_gemini"
 
 static int msm_gemini_open(struct inode *inode, struct file *filp)
 {
@@ -42,7 +41,7 @@ static int msm_gemini_open(struct inode *inode, struct file *filp)
 
 	rc = __msm_gemini_open(pgmn_dev);
 
-	GMN_DBG(KERN_INFO "%s:%d] %s open_count = %d\n", __func__, __LINE__,
+	GMN_DBG("%s:%d] %s open_count = %d\n", __func__, __LINE__,
 		filp->f_path.dentry->d_name.name, pgmn_dev->open_count);
 
 	return rc;
@@ -54,11 +53,11 @@ static int msm_gemini_release(struct inode *inode, struct file *filp)
 
 	struct msm_gemini_device *pgmn_dev = filp->private_data;
 
-	GMN_DBG(KERN_INFO "%s:%d]\n", __func__, __LINE__);
+	GMN_DBG("%s:%d]\n", __func__, __LINE__);
 
 	rc = __msm_gemini_release(pgmn_dev);
 
-	GMN_DBG(KERN_INFO "%s:%d] %s open_count = %d\n", __func__, __LINE__,
+	GMN_DBG("%s:%d] %s open_count = %d\n", __func__, __LINE__,
 		filp->f_path.dentry->d_name.name, pgmn_dev->open_count);
 	return rc;
 }
@@ -87,7 +86,7 @@ static const struct file_operations msm_gemini_fops = {
 
 static struct class *msm_gemini_class;
 static dev_t msm_gemini_devno;
-struct msm_gemini_device *msm_gemini_device_p;
+static struct msm_gemini_device *msm_gemini_device_p;
 
 int msm_gemini_subdev_init(struct v4l2_subdev *gemini_sd)
 {
@@ -117,7 +116,7 @@ static long msm_gemini_subdev_ioctl(struct v4l2_subdev *sd,
 	GMN_DBG("%s: Calling __msm_gemini_ioctl\n", __func__);
 
 	rc = __msm_gemini_ioctl(pgmn_dev, cmd, (unsigned long)arg);
-	pr_debug("%s: X\n", __func__);
+	GMN_DBG("%s: X\n", __func__);
 	return rc;
 }
 
@@ -154,7 +153,7 @@ static int msm_gemini_init(struct platform_device *pdev)
 	v4l2_subdev_init(&msm_gemini_device_p->subdev, &msm_gemini_subdev_ops);
 	v4l2_set_subdev_hostdata(&msm_gemini_device_p->subdev,
 		msm_gemini_device_p);
-	pr_debug("%s: msm_gemini_device_p 0x%x", __func__,
+	GMN_DBG("%s: msm_gemini_device_p 0x%x", __func__,
 			(uint32_t)msm_gemini_device_p);
 	GMN_DBG("%s:gemini: platform_set_drvdata\n", __func__);
 	platform_set_drvdata(pdev, &msm_gemini_device_p->subdev);
@@ -258,7 +257,7 @@ static void __exit msm_gemini_driver_exit(void)
 	platform_driver_unregister(&msm_gemini_driver);
 }
 
-MODULE_DESCRIPTION("msm gemini jpeg driver");
+MODULE_DESCRIPTION("MSM Gemini JPEG driver");
 MODULE_VERSION("msm gemini 0.1");
 
 module_init(msm_gemini_driver_init);

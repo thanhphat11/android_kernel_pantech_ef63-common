@@ -1,4 +1,4 @@
-/* Copyright (c) 2010,2013 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010,2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -12,10 +12,10 @@
 
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/io.h>
 #include "msm_gemini_hw.h"
 #include "msm_gemini_common.h"
 
-#include <linux/io.h>
 
 static void *gemini_region_base;
 static uint32_t gemini_region_size;
@@ -25,27 +25,24 @@ int msm_gemini_hw_pingpong_update(struct msm_gemini_hw_pingpong *pingpong_hw,
 {
 	int buf_free_index = -1;
 
-	if (!pingpong_hw->buf_status[0]) {
+	if (!pingpong_hw->buf_status[0])
 		buf_free_index = 0;
-	} else if (!pingpong_hw->buf_status[1]) {
+	else if (!pingpong_hw->buf_status[1])
 		buf_free_index = 1;
-	} else {
+	else {
 		GMN_PR_ERR("%s:%d: pingpong buffer busy\n", __func__, __LINE__);
-		return -1;
+		return -EBUSY;
 	}
 
 	pingpong_hw->buf[buf_free_index] = *buf;
 	pingpong_hw->buf_status[buf_free_index] = 1;
 
-	if (pingpong_hw->is_fe) {
-		/* it is fe */
+	if (pingpong_hw->is_fe)
 		msm_gemini_hw_fe_buffer_update(
 			&pingpong_hw->buf[buf_free_index], buf_free_index);
-	} else {
-		/* it is we */
+	else
 		msm_gemini_hw_we_buffer_update(
 			&pingpong_hw->buf[buf_free_index], buf_free_index);
-	}
 	return 0;
 }
 
@@ -83,22 +80,20 @@ struct msm_gemini_hw_cmd hw_cmd_irq_get_status[] = {
 int msm_gemini_hw_irq_get_status(void)
 {
 	uint32_t n_irq_status = 0;
-	rmb();
 	n_irq_status = msm_gemini_hw_read(&hw_cmd_irq_get_status[0]);
-	rmb();
 	return n_irq_status;
 }
 
 struct msm_gemini_hw_cmd hw_cmd_encode_output_size[] = {
 	/* type, repeat n times, offset, mask, data or pdata */
 	{MSM_GEMINI_HW_CMD_TYPE_READ, 1,
-		HWIO_JPEG_STATUS_ENCODE_OUTPUT_SIZE_ADDR,
-		HWIO_JPEG_STATUS_ENCODE_OUTPUT_SIZE_RMSK, {0} },
+	HWIO_JPEG_STATUS_ENCODE_OUTPUT_SIZE_ADDR,
+	HWIO_JPEG_STATUS_ENCODE_OUTPUT_SIZE_RMSK, {0} },
 };
 
 long msm_gemini_hw_encode_output_size(void)
 {
-	uint32_t encode_output_size = 0;
+	long encode_output_size;
 
 	encode_output_size = msm_gemini_hw_read(&hw_cmd_encode_output_size[0]);
 
@@ -108,7 +103,7 @@ long msm_gemini_hw_encode_output_size(void)
 struct msm_gemini_hw_cmd hw_cmd_irq_clear[] = {
 	/* type, repeat n times, offset, mask, data or pdata */
 	{MSM_GEMINI_HW_CMD_TYPE_WRITE, 1, HWIO_JPEG_IRQ_CLEAR_ADDR,
-		HWIO_JPEG_IRQ_CLEAR_RMSK, {JPEG_IRQ_CLEAR_ALL} },
+	HWIO_JPEG_IRQ_CLEAR_RMSK, {JPEG_IRQ_CLEAR_ALL} },
 };
 
 void msm_gemini_hw_irq_clear(uint32_t mask, uint32_t data)
@@ -228,16 +223,18 @@ struct msm_gemini_hw_cmd hw_cmd_we_buffer_cfg[] = {
 		HWIO_JPEG_WE_CBCR_THRESHOLD_RMSK, {0} },
 };
 
-/* first dimension is WE_ASSERT_STALL_TH and WE_DEASSERT_STALL_TH
-   second dimension is for offline and real-time settings
+/*
+ * first dimension is WE_ASSERT_STALL_TH and WE_DEASSERT_STALL_TH
+ * second dimension is for offline and real-time settings
  */
 static const uint32_t GEMINI_WE_Y_THRESHOLD[2][2] = {
 	{ 0x00000190, 0x000001ff },
 	{ 0x0000016a, 0x000001ff }
 };
 
-/* first dimension is WE_ASSERT_STALL_TH and WE_DEASSERT_STALL_TH
-   second dimension is for offline and real-time settings
+/*
+ * first dimension is WE_ASSERT_STALL_TH and WE_DEASSERT_STALL_TH
+ * second dimension is for offline and real-time settings
  */
 static const uint32_t GEMINI_WE_CBCR_THRESHOLD[2][2] = {
 	{ 0x00000190, 0x000001ff },
@@ -246,7 +243,7 @@ static const uint32_t GEMINI_WE_CBCR_THRESHOLD[2][2] = {
 
 void msm_gemini_hw_we_buffer_cfg(uint8_t is_realtime)
 {
-	uint32_t              n_reg_val = 0;
+	uint32_t n_reg_val = 0;
 
 	struct msm_gemini_hw_cmd *hw_cmd_p = &hw_cmd_we_buffer_cfg[0];
 
@@ -297,7 +294,7 @@ void msm_gemini_hw_we_buffer_update(struct msm_gemini_hw_buf *p_input,
 
 	struct msm_gemini_hw_cmd *hw_cmd_p;
 
-	pr_debug("%s:%d] pingpong index %d", __func__, __LINE__,
+	GMN_DBG("%s:%d] pingpong index %d", __func__, __LINE__,
 		pingpong_index);
 	if (pingpong_index == 0) {
 		hw_cmd_p = &hw_cmd_we_ping_update[0];
@@ -354,14 +351,10 @@ void msm_gemini_hw_reset(void *base, int size)
 
 	hw_cmd_p = &hw_cmd_reset[0];
 
-	wmb();
 	msm_gemini_hw_write(hw_cmd_p++);
 	msm_gemini_hw_write(hw_cmd_p++);
 	msm_gemini_hw_write(hw_cmd_p++);
 	msm_gemini_hw_write(hw_cmd_p);
-	wmb();
-
-	return;
 }
 
 uint32_t msm_gemini_hw_read(struct msm_gemini_hw_cmd *hw_cmd_p)
@@ -371,7 +364,7 @@ uint32_t msm_gemini_hw_read(struct msm_gemini_hw_cmd *hw_cmd_p)
 
 	paddr = gemini_region_base + hw_cmd_p->offset;
 
-	data = readl(paddr);
+	data = readl_relaxed(paddr);
 	data &= hw_cmd_p->mask;
 
 	GMN_DBG("%s:%d] type-%d n-%d offset-0x%4x mask-0x%8x data-0x%8x\n",
@@ -395,13 +388,13 @@ void msm_gemini_hw_write(struct msm_gemini_hw_cmd *hw_cmd_p)
 	if (hw_cmd_p->mask == 0xffffffff) {
 		old_data = 0;
 	} else {
-		old_data = readl(paddr);
+		old_data = readl_relaxed(paddr);
 		old_data &= ~hw_cmd_p->mask;
 	}
 
 	new_data = hw_cmd_p->data & hw_cmd_p->mask;
 	new_data |= old_data;
-	writel(new_data, paddr);
+	writel_relaxed(new_data, paddr);
 }
 
 int msm_gemini_hw_wait(struct msm_gemini_hw_cmd *hw_cmd_p, int m_us)
@@ -471,10 +464,12 @@ int msm_gemini_hw_exec_cmds(struct msm_gemini_hw_cmd *hw_cmd_p, uint32_t m_cmds)
 			break;
 
 		case MSM_GEMINI_HW_CMD_TYPE_UDELAY:
+			/* Userspace driver provided delay duration */
 			msm_gemini_hw_delay(hw_cmd_p, 1);
 			break;
 
 		case MSM_GEMINI_HW_CMD_TYPE_MDELAY:
+			/* Userspace driver provided delay duration */
 			msm_gemini_hw_delay(hw_cmd_p, 1000);
 			break;
 
