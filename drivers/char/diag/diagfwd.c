@@ -55,6 +55,10 @@
 
 #define SMD_DRAIN_BUF_SIZE 4096
 
+#ifdef CONFIG_ANDROID_PANTECH_USB
+extern void pantech_diag_init_mask_table(void);
+#endif
+
 int diag_debug_buf_idx;
 unsigned char diag_debug_buf[1024];
 /* Number of entries in table of buffers */
@@ -502,6 +506,11 @@ int diag_process_smd_read_data(struct diag_smd_info *smd_info, void *buf,
 			if (err) {
 				pr_err_ratelimited("diag: In %s, diag_device_write error: %d\n",
 					__func__, err);
+#ifdef CONFIG_ANDROID_PANTECH_USB
+				if ((err == -ENODEV) && (driver->logging_mode == USB_MODE)) {
+					pantech_diag_init_mask_table();
+				}
+#endif
 			}
 			spin_unlock_irqrestore(&smd_info->in_busy_lock, flags);
 		}
@@ -1915,6 +1924,9 @@ static void diag_usb_connect_work_fn(struct work_struct *w)
 
 static void diag_usb_disconnect_work_fn(struct work_struct *w)
 {
+#ifdef CONFIG_ANDROID_PANTECH_USB
+	pantech_diag_init_mask_table();
+#endif
 	diagfwd_disconnect();
 }
 
@@ -1952,7 +1964,11 @@ int diagfwd_connect(void)
 
 	return 0;
 exit:
+#ifndef CONFIG_PANTECH_SIO_BUG_FIX
 	pr_err("diag: unable to alloc USB req on legacy ch, err: %d", err);
+#else
+	pr_err("diag: unable to alloc USB req on legacy ch, Cancel err no %d\n", err);
+#endif
 	return err;
 }
 
