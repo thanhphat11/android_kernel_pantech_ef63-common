@@ -1,0 +1,106 @@
+if CUST_PANTECH_H
+
+comment "PANTECH PMIC Kernel Configuration"
+
+config MACH_MSM8974_PMIC_COMMON
+	bool
+	default y
+	select PANTECH_PMIC_CHARGER_OFFLINE
+	select PANTECH_PMIC_BOOT_POWER_ON_PROCESS
+	select PANTECH_PMIC_PMIC_HW_REVISION
+	select PANTECH_PMIC_SHARED_DATA
+	select PANTECH_PMIC_BMS_TEST
+	select PANTECH_PMIC_HW_REVISION
+	select PANTECH_PMIC
+	select PANTECH_PMIC_MONITOR_TEST
+	select PANTECH_PMIC_MAX17058
+	select PANTECH_PMIC_BOOT_CHARGER_NO_WAIT
+	select PANTECH_PMIC_UVLO
+	select PANTECH_PMIC_I2C_LOCK
+	select PANTECH_PMIC_AUTO_PWR_ON
+
+if MACH_MSM8974_EF63K
+config DEFINE_LIST_EF63K
+	bool
+	default y
+	select PANTECH_PMIC_RTC_ALM_OFF
+	select PANTECH_PMIC_BOARD_TYPE
+endif
+
+if MACH_MSM8974_EF63L
+config DEFINE_LIST_EF63L
+	bool
+	default y
+	select PANTECH_PMIC_RTC_ALM_OFF
+	select PANTECH_PMIC_BOARD_TYPE
+endif
+
+if MACH_MSM8974_EF63S
+config DEFINE_LIST_EF63S
+	bool
+	default y
+	select PANTECH_PMIC_RTC_ALM_OFF
+	select PANTECH_PMIC_BOARD_TYPE
+endif
+
+#
+config PANTECH_PMIC_CHARGER_OFFLINE
+	bool
+
+#
+config PANTECH_PMIC_BOOT_POWER_ON_PROCESS
+	bool
+
+# PMIC HW rev
+config PANTECH_PMIC_PMIC_HW_REVISION
+	bool
+
+#
+config PANTECH_PMIC_SHARED_DATA
+	bool
+
+#
+config PANTECH_PMIC_BMS_TEST
+	bool
+
+#
+config PANTECH_PMIC_HW_REVISION
+	bool
+
+#
+config PANTECH_PMIC
+	bool
+
+#
+config PANTECH_PMIC_MONITOR_TEST
+	bool
+
+#
+config PANTECH_PMIC_MAX17058
+	bool
+
+# auto trickle disable
+config PANTECH_PMIC_BOOT_CHARGER_NO_WAIT
+	bool
+
+# charging limitation with LCD ON
+config PANTECH_PMIC_UVLO
+	bool
+
+# It will protected i2c transport
+config PANTECH_PMIC_I2C_LOCK
+	bool
+
+# 10% offline charging Auto power on
+config PANTECH_PMIC_AUTO_PWR_ON
+	bool
+
+# this is used in rtc.h, rtc-dev.c, qpnp-rtc.c
+config PANTECH_PMIC_RTC_ALM_OFF
+	bool
+
+# recognizing HW rev(S/K/L) by PMIC gpios.
+config PANTECH_PMIC_BOARD_TYPE
+	bool
+
+endif
