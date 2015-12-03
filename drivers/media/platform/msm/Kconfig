@@ -31,7 +31,7 @@ menuconfig MSMB_CAMERA
 config MSMB_CAMERA_LEGACY
 	bool "Qualcomm MSM camera 2.0 Legacy"
 	depends on MSMB_CAMERA
-	default n
+	default y
 	---help---
 	  Say Y here to enable selecting the video adapters for
 	  Qualcomm msm camera and video capture 2.0, for drivers
