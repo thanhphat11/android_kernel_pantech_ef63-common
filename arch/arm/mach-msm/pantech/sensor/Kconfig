@@ -24,7 +24,4 @@ endif
 config PANTECH_SENSOR_SLEEP_STATUS
 	bool
 
-config CHECK_HWREV_FOR_CHANGING_PROXIMITY_THRESHOLD
-	bool
-
 endif
